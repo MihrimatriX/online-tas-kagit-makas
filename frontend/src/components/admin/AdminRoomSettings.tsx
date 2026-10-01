@@ -1,126 +1,105 @@
 import { useEffect, useState } from "react";
-import { Lobby, Tournament } from "../../types";
-import { roomSettings } from "../../lib/format";
+import { Lobby, RoomSettings } from "../../types";
 
-export interface RoomPatch {
-  name?: string;
-  overlayEnabled?: boolean;
-  winningScore?: number;
-  moveSeconds?: number;
-  countdownSeconds?: number;
-  autoAdvance?: boolean;
-}
+export type RoomPatch = Partial<RoomSettings> & { name?: string; overlayEnabled?: boolean };
 
 interface AdminRoomSettingsProps {
   lobby: Lobby;
-  tournament: Tournament | null;
+  locked: boolean;
   onUpdate: (patch: RoomPatch) => void;
 }
 
-export function AdminRoomSettings({ lobby, tournament, onUpdate }: AdminRoomSettingsProps) {
-  const settings = roomSettings(lobby);
-  const autoAdvance = tournament ? tournament.roundAdvanceMode === "automatic" : settings.autoAdvance;
-  const rulesLocked = Boolean(tournament);
+export function AdminRoomSettings({ lobby, locked, onUpdate }: AdminRoomSettingsProps) {
   const [name, setName] = useState(lobby.name);
+  const settings = lobby.settings;
 
-  useEffect(() => {
-    setName(lobby.name);
-  }, [lobby.name]);
+  useEffect(() => setName(lobby.name), [lobby.name]);
+
+  const saveName = () => {
+    const next = name.trim();
+    if (next && next !== lobby.name) onUpdate({ name: next });
+    else setName(lobby.name);
+  };
 
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <span>Oda ayarları</span>
-        <span>{rulesLocked ? "Puan ve süre kilitli" : "Maç başlamadan değişir"}</span>
-      </div>
-      <label>
-        Oda adı
-        <input
-          maxLength={32}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          onBlur={(event) => {
-            const next = event.target.value.trim();
-            if (next && next !== lobby.name) onUpdate({ name: next });
-          }}
+    <section>
+      <header className="sheet-head">
+        <h2>Oda ayarları</h2>
+        <span>{locked ? "Kurallar kilitli" : "Kuradan önce değişir"}</span>
+      </header>
+      <div className="settings">
+        <label className="field">
+          <span className="field__label">Oda adı</span>
+          <input
+            className="input"
+            maxLength={32}
+            onBlur={saveName}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+            value={name}
+          />
+        </label>
+        <Choices
+          disabled={locked}
+          label="Maçı kazanmak için"
+          onPick={(value) => onUpdate({ winningScore: value })}
+          options={[2, 3, 4, 5].map((value) => ({ value, label: `İlk ${value}` }))}
+          value={settings.winningScore}
         />
-      </label>
-      <fieldset className="choice-row" disabled={rulesLocked}>
-        <legend>Kaç puanla kazanılır</legend>
-        {[2, 3, 4, 5].map((value) => (
-          <button
-            className={settings.winningScore === value ? "choice active" : "choice"}
-            key={value}
-            type="button"
-            onClick={() => onUpdate({ winningScore: value })}
-          >
-            İlk {value}
-          </button>
-        ))}
-      </fieldset>
-      <fieldset className="choice-row" disabled={rulesLocked}>
-        <legend>Hamle süresi</legend>
-        {[5, 8, 10, 15, 20].map((value) => (
-          <button
-            className={settings.moveSeconds === value ? "choice active" : "choice"}
-            key={value}
-            type="button"
-            onClick={() => onUpdate({ moveSeconds: value })}
-          >
-            {value} sn
-          </button>
-        ))}
-      </fieldset>
-      <fieldset className="choice-row" disabled={rulesLocked}>
-        <legend>Maç başı geri sayım</legend>
-        {[0, 3, 5].map((value) => (
-          <button
-            className={settings.countdownSeconds === value ? "choice active" : "choice"}
-            key={value}
-            type="button"
-            onClick={() => onUpdate({ countdownSeconds: value })}
-          >
-            {value === 0 ? "Yok" : `${value} sn`}
-          </button>
-        ))}
-      </fieldset>
-      <fieldset className="choice-row">
-        <legend>Tur bitince</legend>
-        <button
-          className={!autoAdvance ? "choice active" : "choice"}
-          type="button"
-          onClick={() => onUpdate({ autoAdvance: false })}
-        >
-          Ben onaylarım
-        </button>
-        <button
-          className={autoAdvance ? "choice active" : "choice"}
-          type="button"
-          onClick={() => onUpdate({ autoAdvance: true })}
-        >
-          Kendiliğinden geç
-        </button>
-      </fieldset>
-      <fieldset className="choice-row">
-        <legend>Yayın ekranı</legend>
-        <button
-          className={lobby.overlayEnabled !== false ? "choice active" : "choice"}
-          type="button"
-          onClick={() => onUpdate({ overlayEnabled: true })}
-        >
-          Açık
-        </button>
-        <button
-          className={lobby.overlayEnabled === false ? "choice active" : "choice"}
-          type="button"
-          onClick={() => onUpdate({ overlayEnabled: false })}
-        >
-          Kapalı
-        </button>
-      </fieldset>
-      {rulesLocked && (
-        <p className="entry-hint">Eşleşmeler oluştuktan sonra puan ve süre değişmez. Ad, yayın ve tur geçişi değişebilir.</p>
-      )}
+        <Choices
+          disabled={locked}
+          label="Hamle süresi"
+          onPick={(value) => onUpdate({ moveSeconds: value })}
+          options={[5, 8, 10, 15, 20].map((value) => ({ value, label: `${value} sn` }))}
+          value={settings.moveSeconds}
+        />
+        <Choices
+          disabled={locked}
+          label="Maç öncesi geri sayım"
+          onPick={(value) => onUpdate({ countdownSeconds: value })}
+          options={[0, 3, 5].map((value) => ({ value, label: value ? `${value} sn` : "Yok" }))}
+          value={settings.countdownSeconds}
+        />
+        <Choices
+          label="Tur bitince"
+          onPick={(value) => onUpdate({ autoAdvance: value === 1 })}
+          options={[
+            { value: 0, label: "Ben başlatırım" },
+            { value: 1, label: "Kendiliğinden geç" }
+          ]}
+          value={settings.autoAdvance ? 1 : 0}
+        />
+      </div>
+      {locked && <p className="section-note">Kura çekildikten sonra puan ve süreler değişmez; oda adı ve tur geçişi değişebilir.</p>}
     </section>
+  );
+}
+
+interface ChoicesProps {
+  label: string;
+  value: number;
+  options: { value: number; label: string }[];
+  disabled?: boolean;
+  onPick: (value: number) => void;
+}
+
+function Choices({ label, value, options, disabled, onPick }: ChoicesProps) {
+  return (
+    <fieldset className="choices" disabled={disabled}>
+      <legend className="field__label">{label}</legend>
+      <div className="choices__row">
+        {options.map((option) => (
+          <button
+            aria-pressed={option.value === value}
+            className="choice"
+            key={option.value}
+            onClick={() => option.value !== value && onPick(option.value)}
+            type="button"
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
   );
 }

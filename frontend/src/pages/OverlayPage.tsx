@@ -1,89 +1,89 @@
 import { useEffect, useState } from "react";
-import { ActivityFeed } from "../components/live/ActivityFeed";
-import { ActiveMatchesPanel } from "../components/live/ActiveMatchesPanel";
 import { LiveBracket } from "../components/bracket/LiveBracket";
+import { ActiveMatchesPanel } from "../components/live/ActiveMatchesPanel";
+import { ActivityFeed } from "../components/live/ActivityFeed";
+import { syncServerClock } from "../lib/clock";
 import { socket } from "../lib/socket";
 import { TournamentSnapshot } from "../types";
+import { Wordmark } from "./LandingPage";
 
-interface OverlayPageProps {
-  snapshot: TournamentSnapshot;
-  chroma?: boolean;
-  overlayUrl?: string;
-  chromaUrl?: string;
-  onCopyOverlay?: () => void;
-  onOpenOverlay?: () => void;
-}
-
-export function OverlayPage({ snapshot, chroma = false, overlayUrl, chromaUrl, onCopyOverlay, onOpenOverlay }: OverlayPageProps) {
-  return (
-    <main className={chroma ? "overlay-page chroma" : "overlay-page"}>
-      <ActiveMatchesPanel matches={snapshot.activeMatches} />
-      <div className="overlay-main">
-        <LiveBracket bracket={snapshot.bracket} playerId={null} tournament={snapshot.tournament} />
-        {overlayUrl && (
-          <div className="overlay-links">
-            <button className="secondary-button" type="button" onClick={onCopyOverlay}>
-              Yayın linkini kopyala
-            </button>
-            <button className="secondary-button" type="button" onClick={onOpenOverlay}>
-              Yeni pencerede aç
-            </button>
-            {chromaUrl && (
-              <a className="secondary-button" href={chromaUrl} target="_blank" rel="noreferrer">
-                Yeşil fon (OBS)
-              </a>
-            )}
-          </div>
-        )}
-      </div>
-      <ActivityFeed events={snapshot.feed.slice(0, 8)} />
-    </main>
-  );
-}
-
+/** Session-less broadcast view for OBS: /overlay/CODE (add ?chroma=1 for a green key background). */
 export function SpectatorOverlay({ code, chroma }: { code: string; chroma: boolean }) {
   const [snapshot, setSnapshot] = useState<TournamentSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const onSnap = (payload: TournamentSnapshot) => {
+    const onSnapshot = (payload: TournamentSnapshot) => {
+      syncServerClock(payload.serverTime);
       setSnapshot(payload);
       setError(null);
     };
-    const onErr = ({ message }: { message: string }) => setError(message);
-    socket.on("tournament:snapshot", onSnap);
-    socket.on("app:error", onErr);
-
+    const onError = ({ message }: { message: string }) => setError(message);
     const join = () => socket.emit("lobby:spectate", { lobbyCode: code });
+
+    socket.on("tournament:snapshot", onSnapshot);
+    socket.on("app:error", onError);
     socket.on("connect", join);
     if (socket.connected) join();
-
     return () => {
-      socket.off("tournament:snapshot", onSnap);
-      socket.off("app:error", onErr);
+      socket.off("tournament:snapshot", onSnapshot);
+      socket.off("app:error", onError);
       socket.off("connect", join);
     };
   }, [code]);
 
-  if (error) {
+  if (!snapshot || error) {
     return (
-      <main className={`overlay-standalone ${chroma ? "chroma" : ""}`}>
-        <p>{error}</p>
-      </main>
+      <div className={`overlay${chroma ? " is-chroma" : ""}`}>
+        <p className="overlay__panel overlay__message">{error ?? "Yayın bağlanıyor…"}</p>
+      </div>
     );
   }
 
-  if (!snapshot) {
-    return (
-      <main className={`overlay-standalone ${chroma ? "chroma" : ""}`}>
-        <p>Yayın bağlanıyor…</p>
-      </main>
-    );
-  }
-
+  const { lobby, tournament } = snapshot;
+  const phase = tournament?.phases[tournament.currentPhaseIndex];
   return (
-    <div className={`overlay-standalone ${chroma ? "chroma" : ""}`}>
-      <OverlayPage snapshot={snapshot} chroma={chroma} />
+    <div className={`overlay${chroma ? " is-chroma" : ""}`}>
+      <header className="overlay__panel overlay__bar">
+        <Wordmark />
+        <strong className="overlay__title">{lobby.name}</strong>
+        <span className="overlay__phase">
+          {tournament?.status === "finished" ? "Turnuva bitti" : phase ? phase.name : "Lobi açık"}
+          {tournament?.status === "paused" && " · duraklatıldı"}
+        </span>
+        <span className="overlay__code">{lobby.code}</span>
+      </header>
+
+      {tournament?.champion && (
+        <section className="overlay__panel overlay__champion">
+          <span>Şampiyon</span>
+          <strong>{tournament.champion.name}</strong>
+        </section>
+      )}
+
+      <div className="overlay__body">
+        <div className="overlay__panel overlay__bracket">
+          {tournament ? (
+            <LiveBracket bracket={snapshot.bracket} playerId={null} tournament={tournament} />
+          ) : (
+            <div className="overlay__waiting">
+              <span className="field__label">Katılmak için kod</span>
+              <p className="code-mega">{lobby.code}</p>
+              <p>
+                {lobby.players.length} oyuncu lobide · {lobby.players.filter((player) => player.isReady || player.isTest).length} hazır
+              </p>
+            </div>
+          )}
+        </div>
+        <aside className="overlay__side">
+          <div className="overlay__panel">
+            <ActiveMatchesPanel limit={6} matches={snapshot.activeMatches} />
+          </div>
+          <div className="overlay__panel">
+            <ActivityFeed events={snapshot.feed} limit={6} />
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }

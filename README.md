@@ -1,18 +1,18 @@
 # RPS Arena
 
-Gerçek zamanlı, eleme usulü **taş-kağıt-makas** turnuva uygulaması.
-
-React + Node.js + Socket.io. Tek Docker container ile ayağa kalkar.
+Gerçek zamanlı, eleme usulü **taş-kağıt-makas** turnuvası. React + Node.js + Socket.io; tek Docker container ile ayağa kalkar.
 
 ## Özellikler
 
-- Lobi oluştur / koda katıl (`/?code=ABC12`) / rastgele lobi (en fazla 8 kişilik waiting lobiler)
-- 2–64 oyuncu, BYE destekli single-elimination (BYE her zaman gerçek oyuncuyla eşleşir)
-- İlk 3 puana ulaşan kazanır; 3 sn hazırlık + 10 sn hamle süresi
-- Admin: seed, aşama, pause/resume, kazanan ata, kick, test odası, overlay aç/kapa
-- Canlı bracket, activity feed, oturumsuz OBS overlay (`/overlay/KOD` ve `?chroma=1`)
-- Reconnect, 30 sn grace walkover, admin düşerse yetki devri
-- Disk persist (`DATA_FILE`) — restart sonrası timer’lar yeniden kurulur
+- Lobi kur / koda katıl (`/?code=ABC12`) / açık bir lobiye rastgele gir (en fazla 8 kişilik lobiler)
+- 2–64 oyuncu, BYE destekli tek eleme (BYE her zaman gerçek bir oyuncuyla eşleşir)
+- Ayarlanabilir kurallar: ilk 2–5 puan, 5–20 sn hamle, 0–5 sn geri sayım, tur geçişi elle veya otomatik
+- Her round sonrası iki oyuncuya da sonucu gösteren kısa bir ara; süre dolarsa hamle sistemce atanır
+- Yönetici: kura çek / boz, başlat, duraklat / devam, sonraki tur, kazanan ata, maçı baştan başlat, oyuncu çıkar, aynı lobiyle yeni turnuva
+- Test botları (1–2 saniyede oynar), canlı tablo, akış, podyum
+- Oturumsuz OBS overlay: `/overlay/KOD` (yeşil fon: `?chroma=1`)
+- Yeniden bağlanma (sekme kapansa bile), yönetici düşerse 30 sn sonra yetki devri, `Ayrıl` ile turnuvadan çekilme
+- Disk persist (`DATA_FILE`): restart sonrası saatler yeniden kurulur, SIGTERM'de anında yazılır; 3 saat boyunca kimsenin olmadığı lobiler silinir
 
 ## Hızlı başlangıç (Docker)
 
@@ -20,76 +20,66 @@ React + Node.js + Socket.io. Tek Docker container ile ayağa kalkar.
 docker compose up -d --build
 ```
 
-Aç: [http://localhost:4000](http://localhost:4000)
-
-```bash
-docker compose logs -f   # log
-docker compose down      # durdur
-```
-
-Kalıcı veri: Docker volume `tmk-data` → `/data/store.json`
-
-Yayın overlay (lobiye girmeden): `http://localhost:4000/overlay/ABC12`  
-OBS chroma: `http://localhost:4000/overlay/ABC12?chroma=1`
+Aç: [http://localhost:4000](http://localhost:4000) · Kalıcı veri: Docker volume `tmk-data` → `/data/store.json`
 
 ## Geliştirme
 
-Gereksinimler: Node.js 22+, npm
+Node.js 22+ ve npm.
 
 ```bash
 npm install
 npm run dev
 ```
 
-| Servis   | URL                      |
-|----------|--------------------------|
-| Frontend | http://localhost:5173    |
-| Backend  | http://localhost:4000    |
+| Servis   | URL                   |
+|----------|-----------------------|
+| Frontend | http://localhost:5173 |
+| Backend  | http://localhost:4000 |
 
 ```bash
 npm run typecheck
-npm run self-check
+npm run self-check   # turnuva akışı, kopma/ayrılma, persist, SEO kaçışları
 npm run build
 ```
 
 ## Proje yapısı
 
 ```text
-backend/          Express + Socket.io API
-frontend/         React (Vite) istemci
-docs/             Tasarım / mimari notları
-Dockerfile        Tek image (UI + API)
-docker-compose.yml
+backend/src/
+  tournament/flow.service.ts      Turnuva akışı: hamle, round saati, faz geçişi, admin komutları
+  tournament/match.service.ts     Maç kuralları (saf fonksiyonlar)
+  tournament/presence.service.ts  Bağlantı, yönetici devri, restart kurtarma, lobi temizliği
+  tournament/timer.service.ts     Tüm sunucu zamanlayıcıları (tek kayıt defteri)
+  tournament/tournament.types.ts  Tel formatı — frontend de buradan `import type` eder
+  socket/                         İnce Socket.io handler'ları
+  state/                          Bellek deposu + disk persist
+frontend/src/
+  pages/                          Arena (lobi / maç / durum / sonuç), Yönetim, Overlay
+  tokens.css, styles.css          Tasarım sistemi (bkz. design.md)
+design.md                         Kilitli tasarım sistemi
 ```
 
 ## Ortam değişkenleri
 
 Örnek: [`.env.example`](.env.example)
 
-| Değişken           | Açıklama                                      | Varsayılan            |
-|--------------------|-----------------------------------------------|-----------------------|
-| `PORT`             | HTTP port                                     | `4000`                |
-| `HOST`             | Bind adresi                                   | `0.0.0.0`             |
-| `SERVE_FRONTEND`   | `1` = backend `frontend/dist` sunar           | Docker’da `1`         |
-| `FRONTEND_ORIGIN`  | CORS (`*` = Origin yansıt)                    | `*` / dev’de Vite     |
-| `DATA_FILE`        | Persist dosyası                               | `./data/store.json`   |
-| `VITE_SOCKET_URL`  | Build-time socket URL (boş = same-origin)     | boş                   |
-
-## npm scriptleri
-
-| Script            | Ne yapar                          |
-|-------------------|-----------------------------------|
-| `npm run dev`     | Backend + frontend birlikte       |
-| `npm run build`   | Production build                  |
-| `npm start`       | Backend’i başlat                  |
-| `npm run self-check` | Temel invariant kontrolü       |
-| `npm run docker:up`  | Compose build + up              |
+| Değişken          | Açıklama                                  | Varsayılan          |
+|-------------------|-------------------------------------------|---------------------|
+| `PORT`            | HTTP port                                 | `4000`              |
+| `HOST`            | Bind adresi                               | `0.0.0.0`           |
+| `SERVE_FRONTEND`  | `1` = backend `frontend/dist` sunar       | Docker'da `1`       |
+| `FRONTEND_ORIGIN` | CORS (`*` = Origin yansıt)                | `*` / dev'de Vite   |
+| `DATA_FILE`       | Persist dosyası                           | `./data/store.json` |
+| `PERSIST`         | `0` = diske yazma                         | açık                |
+| `PUBLIC_ORIGIN`   | Canonical / Open Graph origin             | istek başlıkları    |
+| `VITE_SOCKET_URL` | Build-time socket URL (boş = same-origin) | boş                 |
 
 ## Tipik turnuva akışı
 
-1. Lobi kur veya koda katıl (`/?code=ABC12`)
-2. Oyuncular **Hazırım** desin (admin bracket’i ancak o zaman hazırlar)
-3. Admin bracket hazırlar (veya Test Turnuvasını Başlat)
-4. Turnuvayı aktif et → aşamayı başlat
-5. Maçlar oynanır; aşama bitince sonraki aşama (veya otomatik geçiş)
-6. Şampiyonu yayınla
+1. Lobi kur, kodu paylaş. Herkes **Hazırım** der.
+2. Yönetici **Kurayı çek** → tabloyu kontrol eder (gerekirse **Kurayı boz**).
+3. **Turnuvayı başlat** → ilk turun bütün maçları aynı anda açılır.
+4. Tur bitince yönetici sıradaki turu başlatır (veya otomatik geçiş açıksa kendiliğinden başlar).
+5. Final bitince şampiyon ilan edilir; **Yeni turnuva** aynı kodla lobiyi yeniden açar.
+
+Yöneticinin her an tek bir "Sıradaki adım" butonu vardır; Arena sekmesinde de görünür.

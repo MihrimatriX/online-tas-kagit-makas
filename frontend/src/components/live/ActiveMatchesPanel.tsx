@@ -1,60 +1,39 @@
-import { Timer, Trophy } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useRemainingMs } from "../../lib/clock";
 import { SafeMatch } from "../../types";
-import { statusLabel } from "../../lib/format";
 
-interface ActiveMatchesPanelProps {
-  matches: SafeMatch[];
-}
-
-export function ActiveMatchesPanel({ matches }: ActiveMatchesPanelProps) {
+export function ActiveMatchesPanel({ matches, limit }: { matches: SafeMatch[]; limit?: number }) {
+  const shown = limit ? matches.slice(0, limit) : matches;
   return (
-    <section className="panel active-panel" aria-label="Aktif maclar">
-      <div className="panel-head">
-        <span>Şu an oynanan maçlar</span>
+    <section className="rail-section" aria-label="Şu an oynanan maçlar">
+      <header className="sheet-head sheet-head--small">
+        <h2>Şimdi oynanıyor</h2>
         <span>{matches.length}</span>
-      </div>
-      <div className="active-match-list">
-        {matches.length === 0 ? (
-          <div className="empty-state compact">Şu an kimse oynamıyor.</div>
-        ) : (
-          matches.map((match) => (
-            <article className="active-match-card" key={match.id}>
-              <div className="active-match-names">
-                <span>{match.player1.name}</span>
-                <span>{match.player2.name}</span>
-              </div>
-              <div className="active-match-score">
-                <strong>{match.player1.score}</strong>
-                <span>-</span>
-                <strong>{match.player2.score}</strong>
-              </div>
-              <div className="active-match-meta">
-                {match.status === "playing" ? <Timer size={14} /> : <Trophy size={14} />}
-                <span>{statusLabel(match.status)}</span>
-                {match.roundEndsAt && match.status === "playing" && (
-                  <MatchMiniTimer endsAt={match.roundEndsAt} />
-                )}
-              </div>
-            </article>
-          ))
-        )}
-      </div>
+      </header>
+      {matches.length === 0 ? (
+        <p className="empty-note">Şu an oynanan maç yok.</p>
+      ) : (
+        <ul className="live-list">
+          {shown.map((match) => (
+            <li className="live-row" key={match.id}>
+              <span className="live-row__name">{match.player1.name}</span>
+              <span className="live-row__score">
+                {match.player1.score}–{match.player2.score}
+              </span>
+              <span className="live-row__name live-row__name--right">{match.player2.name}</span>
+              <span className="live-row__meta">
+                {match.phaseName}
+                {match.status === "paused" ? " · durdu" : <MiniClock endsAt={match.roundEndsAt} />}
+              </span>
+            </li>
+          ))}
+          {shown.length < matches.length && <li className="live-more">+{matches.length - shown.length} maç daha</li>}
+        </ul>
+      )}
     </section>
   );
 }
 
-function MatchMiniTimer({ endsAt }: { endsAt: string }) {
-  const [remaining, setRemaining] = useState(10);
-
-  useEffect(() => {
-    const tick = () => {
-      setRemaining(Math.max(0, Math.ceil((new Date(endsAt).getTime() - Date.now()) / 1000)));
-    };
-    tick();
-    const timer = window.setInterval(tick, 250);
-    return () => window.clearInterval(timer);
-  }, [endsAt]);
-
-  return <span className="mini-timer">{remaining}s</span>;
+function MiniClock({ endsAt }: { endsAt: string | null }) {
+  const remaining = useRemainingMs(endsAt, 500);
+  return endsAt && remaining > 0 ? <> · {Math.ceil(remaining / 1000)} sn</> : null;
 }

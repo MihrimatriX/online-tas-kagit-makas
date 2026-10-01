@@ -90,7 +90,7 @@ export function seoForRequest(input: {
 export function injectSeo(html: string, page: SeoTags): string {
   let next = html.replace(
     /<title data-seo="title">[\s\S]*?<\/title>/,
-    `<title data-seo="title">${escapeHtml(page.title)}</title>`
+    () => `<title data-seo="title">${escapeHtml(page.title)}</title>`
   );
 
   const values: Record<string, string> = {
@@ -109,12 +109,15 @@ export function injectSeo(html: string, page: SeoTags): string {
   for (const [key, value] of Object.entries(values)) {
     const attr = key === "canonical" ? "href" : "content";
     const re = new RegExp(`(data-seo="${key}"[^>]*?\\s${attr}=")[^"]*(")`);
-    next = next.replace(re, `$1${escapeAttr(value)}$2`);
+    // Replacer functions: user text containing "$1" or "    next = next.replace(re, `$1${escapeAttr(value)}$2`);" must not be read as a replacement pattern.
+    next = next.replace(re, (_match, open: string, close: string) => `${open}${escapeAttr(value)}${close}`);
   }
 
+  // Lobby names are user input; a "</script>" inside the JSON-LD would close the tag and inject markup.
+  const jsonLd = JSON.stringify(page.jsonLd).replace(/</g, "\\u003c");
   next = next.replace(
     /(<script type="application\/ld\+json" data-seo="jsonld">)[\s\S]*?(<\/script>)/,
-    `$1${JSON.stringify(page.jsonLd)}$2`
+    (_match, open: string, close: string) => `${open}${jsonLd}${close}`
   );
 
   return next;

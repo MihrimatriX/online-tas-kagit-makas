@@ -1,4 +1,4 @@
-import { ActivityFeedEvent, Lobby, Move, RoomSettings } from "../types";
+import { ActivityFeedEvent, AdminAction, Move } from "../types";
 
 export const moveLabels: Record<Move, string> = {
   rock: "Taş",
@@ -6,42 +6,62 @@ export const moveLabels: Record<Move, string> = {
   scissors: "Makas"
 };
 
-export const moveShortLabels: Record<Move, string> = {
-  rock: "✊",
-  paper: "✋",
-  scissors: "✌️"
+export const MOVES: Move[] = ["rock", "paper", "scissors"];
+
+export function formatClock(value: string) {
+  return new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  waiting: "Bekliyor",
+  seeded: "Eşleşmeler hazır",
+  active: "Sürüyor",
+  paused: "Duraklatıldı",
+  finished: "Bitti",
+  locked: "Sırada",
+  completed: "Bitti",
+  playing: "Oynanıyor",
+  walkover: "Hükmen"
 };
 
-export function formatTime(value: string) {
-  return new Intl.DateTimeFormat("tr-TR", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  }).format(new Date(value));
-}
-
 export function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    waiting: "Bekliyor",
-    seeded: "Eşleşmeler hazır",
-    active: "Devam ediyor",
-    paused: "Duraklatıldı",
-    finished: "Bitti",
-    locked: "Henüz açılmadı",
-    completed: "Bitti",
-    playing: "Oynanıyor",
-    walkover: "Rakip ayrıldı"
-  };
-  return labels[status] ?? status;
+  return STATUS_LABELS[status] ?? status;
 }
 
-export function feedTone(event: ActivityFeedEvent) {
-  if (event.type.includes("winner")) return "gold";
-  if (event.type.includes("completed") || event.type.includes("finished")) return "green";
-  if (event.type.includes("paused")) return "orange";
-  if (event.type.includes("advanced") || event.type.includes("resumed")) return "purple";
-  if (event.type.includes("started")) return "blue";
-  return "neutral";
+export const feedTags: Record<ActivityFeedEvent["type"], string> = {
+  phase_waiting: "Kura",
+  phase_started: "Başladı",
+  phase_paused: "Durdu",
+  phase_resumed: "Devam",
+  phase_completed: "Tur bitti",
+  phase_advanced: "Sıradaki",
+  round_result: "Round",
+  match_finished: "Maç",
+  match_draw_round: "Berabere",
+  bye_advance: "BYE",
+  tournament_winner: "Şampiyon",
+  admin_action: "Lobi"
+};
+
+const ADMIN_ACTION_LABELS: Record<AdminAction["actionType"], string> = {
+  TOURNAMENT_SEEDED: "Eşleşmeler çekildi",
+  TOURNAMENT_UNSEEDED: "Eşleşmeler bozuldu",
+  TOURNAMENT_STARTED: "Turnuva başladı",
+  PHASE_PAUSED: "Duraklatıldı",
+  PHASE_RESUMED: "Devam ettirildi",
+  PHASE_COMPLETED: "Tur tamamlandı",
+  PHASE_ADVANCED: "Sonraki tura geçildi",
+  MATCH_RESTARTED: "Maç baştan başlatıldı",
+  MATCH_WINNER_ASSIGNED: "Kazanan atandı",
+  CHAMPION_CROWNED: "Şampiyon ilan edildi",
+  PLAYER_KICKED: "Oyuncu çıkarıldı",
+  FEED_CLEARED: "Akış temizlendi",
+  ADMIN_TRANSFERRED: "Yönetim devredildi",
+  ROOM_UPDATED: "Oda ayarı değişti"
+};
+
+export function adminActionLabel(type: AdminAction["actionType"]) {
+  return ADMIN_ACTION_LABELS[type] ?? type;
 }
 
 export function joinUrl(code: string) {
@@ -52,15 +72,6 @@ export function overlayUrl(code: string, chroma = false) {
   return `${window.location.origin}/overlay/${code}${chroma ? "?chroma=1" : ""}`;
 }
 
-export function roomSettings(lobby?: Pick<Lobby, "settings"> | null): RoomSettings {
-  return {
-    winningScore: lobby?.settings?.winningScore ?? 3,
-    moveSeconds: lobby?.settings?.moveSeconds ?? 10,
-    countdownSeconds: lobby?.settings?.countdownSeconds ?? 3,
-    autoAdvance: Boolean(lobby?.settings?.autoAdvance)
-  };
-}
-
 export function readRoute() {
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   const params = new URLSearchParams(window.location.search);
@@ -68,7 +79,7 @@ export function readRoute() {
   return {
     overlayCode: overlay ? overlay[1].toUpperCase() : null,
     chroma: params.has("chroma"),
-    joinCode: (params.get("code") ?? "").toUpperCase()
+    joinCode: (params.get("code") ?? "").toUpperCase().slice(0, 8)
   };
 }
 

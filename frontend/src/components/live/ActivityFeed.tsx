@@ -1,45 +1,29 @@
 import { ActivityFeedEvent } from "../../types";
-import { feedTone, formatTime } from "../../lib/format";
+import { feedTags, formatClock } from "../../lib/format";
 
-interface ActivityFeedProps {
-  events: ActivityFeedEvent[];
-}
+const LOUD: ActivityFeedEvent["type"][] = ["tournament_winner", "match_finished", "phase_started"];
 
-const eventMarks: Record<ActivityFeedEvent["type"], string> = {
-  phase_waiting: "WAIT",
-  phase_started: "LIVE",
-  phase_paused: "PAUSE",
-  phase_resumed: "RESUME",
-  phase_completed: "DONE",
-  phase_advanced: "NEXT",
-  round_result: "ROUND",
-  match_finished: "WIN",
-  match_draw_round: "DRAW",
-  bye_advance: "BYE",
-  tournament_winner: "TITLE",
-  admin_action: "ADMIN"
-};
-
-export function ActivityFeed({ events }: ActivityFeedProps) {
+export function ActivityFeed({ events, limit }: { events: ActivityFeedEvent[]; limit?: number }) {
+  const shown = limit ? events.slice(0, limit) : events;
   return (
-    <section className="panel feed-panel" aria-label="Canlı akış">
-      <div className="panel-head">
-        <span>Ne oldu?</span>
-        <span className="live-dot" />
-      </div>
-      <div className="feed-list">
-        {events.length === 0 ? (
-          <div className="empty-state">Maç sonuçları burada akar.</div>
-        ) : (
-          events.map((event) => (
-            <article className={`feed-item tone-${feedTone(event)}`} key={event.id}>
-              <span className="feed-mark">{eventMarks[event.type]}</span>
-              <p>{event.text}</p>
-              <time>{formatTime(event.timestamp)}</time>
-            </article>
-          ))
-        )}
-      </div>
+    <section className="rail-section" aria-label="Canlı akış">
+      <header className="sheet-head sheet-head--small">
+        <h2>Akış</h2>
+      </header>
+      {shown.length === 0 ? (
+        <p className="empty-note">Maç sonuçları ve tur geçişleri burada akar.</p>
+      ) : (
+        <ol className="feed" aria-live="polite">
+          {shown.map((event) => (
+            <li className={`feed__item${LOUD.includes(event.type) ? " is-loud" : ""}`} key={event.id}>
+              <time dateTime={event.timestamp}>{formatClock(event.timestamp)}</time>
+              <p>
+                <span className="feed__tag">{feedTags[event.type]}</span> {event.text}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   );
 }

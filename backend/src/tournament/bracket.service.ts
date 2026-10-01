@@ -8,8 +8,7 @@ import {
   Player,
   PlayerRef,
   SafeMatch,
-  TournamentPhase,
-  TournamentPhaseKey
+  TournamentPhase
 } from "./tournament.types.js";
 
 export function createId(prefix: string) {
@@ -28,35 +27,25 @@ export function nextPowerOf2(n: number) {
 export function getBracketSize(playerCount: number) {
   const size = nextPowerOf2(playerCount);
   if (![2, 4, 8, 16, 32, 64].includes(size)) {
-    throw new Error("Supported bracket sizes are 2, 4, 8, 16, 32 and 64");
+    throw new Error("Turnuva 2 ile 64 oyuncu arasında olmalı");
   }
   return size;
 }
 
-export function getStartingPhaseKey(bracketSize: number): PlayablePhaseKey {
-  switch (bracketSize) {
-    case 64:
-      return "round_of_64";
-    case 32:
-      return "round_of_32";
-    case 16:
-      return "round_of_16";
-    case 8:
-      return "quarter_final";
-    case 4:
-      return "semi_final";
-    case 2:
-      return "final";
-    default:
-      throw new Error("Unsupported bracket size");
-  }
-}
+const STARTING_PHASE: Record<number, PlayablePhaseKey> = {
+  64: "round_of_64",
+  32: "round_of_32",
+  16: "round_of_16",
+  8: "quarter_final",
+  4: "semi_final",
+  2: "final"
+};
 
 export function buildTournamentPhases(bracketSize: number): TournamentPhase[] {
-  const startKey = getStartingPhaseKey(bracketSize);
-  const startIndex = PHASE_ORDER.indexOf(startKey);
+  const startKey = STARTING_PHASE[bracketSize];
+  if (!startKey) throw new Error("Desteklenmeyen tablo boyutu");
 
-  return PHASE_ORDER.slice(startIndex).map((phaseKey, index) => ({
+  return PHASE_ORDER.slice(PHASE_ORDER.indexOf(startKey)).map((phaseKey, index) => ({
     id: createId(`phase_${phaseKey}`),
     phaseIndex: index,
     phaseKey,
@@ -65,59 +54,33 @@ export function buildTournamentPhases(bracketSize: number): TournamentPhase[] {
     matchIds: [],
     winners: [],
     startedAt: null,
-    completedAt: null,
-    createdBy: "system",
-    startedBy: null,
-    lockedByAdmin: index !== 0
+    completedAt: null
   }));
 }
 
-export function createInitialPhaseMatches(
-  players: Player[],
-  phase: TournamentPhase,
-  tournamentId: string
-): Match[] {
-  if (phase.phaseKey === "champion") {
-    throw new Error("Champion phase cannot contain playable matches");
-  }
-
+export function createInitialPhaseMatches(players: Player[], phase: TournamentPhase, tournamentId: string): Match[] {
   const seeded = padWithByes(
-    shuffle(players).map((player) => toMatchPlayer(player)),
+    shuffle(players).map((player) => ({ ...toPlayerRef(player), score: 0 })),
     nextPowerOf2(players.length)
   );
-
   return createMatchesFromPlayers(seeded, phase, tournamentId);
 }
 
-export function createNextPhaseMatches(
-  previousPhaseWinners: PlayerRef[],
-  nextPhase: TournamentPhase,
-  tournamentId: string
-): Match[] {
-  if (nextPhase.phaseKey === "champion") {
-    return [];
-  }
-
-  const players = previousPhaseWinners.map((winner) => ({
-    ...winner,
-    score: 0
-  }));
-
-  return createMatchesFromPlayers(players, nextPhase, tournamentId);
+export function createNextPhaseMatches(winners: PlayerRef[], nextPhase: TournamentPhase, tournamentId: string): Match[] {
+  if (nextPhase.phaseKey === "champion") return [];
+  return createMatchesFromPlayers(
+    winners.map((winner) => ({ ...toPlayerRef(winner), score: 0 })),
+    nextPhase,
+    tournamentId
+  );
 }
 
 export function safeMatch(match: Match): SafeMatch {
-  const { pendingMoves, ...safe } = match;
-  return {
-    ...safe,
-    lockedPlayerIds: Object.keys(pendingMoves)
-  };
+  const { pendingMoves, missedMoves: _missed, ...safe } = match;
+  return { ...safe, lockedPlayerIds: Object.keys(pendingMoves) };
 }
 
-export function buildBracketSnapshot(
-  phases: TournamentPhase[],
-  matchesById: Map<string, Match>
-): PhaseBracketSnapshot[] {
+export function buildBracketSnapshot(phases: TournamentPhase[], matchesById: Map<string, Match>): PhaseBracketSnapshot[] {
   return phases.map((phase) => ({
     phaseKey: phase.phaseKey,
     name: phase.name,
@@ -129,13 +92,16 @@ export function buildBracketSnapshot(
   }));
 }
 
-function createMatchesFromPlayers(
-  seeded: MatchPlayer[],
-  phase: TournamentPhase,
-  tournamentId: string
-) {
+export function toPlayerRef(player: PlayerRef): PlayerRef {
+  const ref: PlayerRef = { id: player.id, name: player.name };
+  if (player.isBye) ref.isBye = true;
+  if (player.isTest) ref.isTest = true;
+  return ref;
+}
+
+function createMatchesFromPlayers(seeded: MatchPlayer[], phase: TournamentPhase, tournamentId: string) {
   if (phase.phaseKey === "champion") {
-    throw new Error("Champion phase cannot contain playable matches");
+    throw new Error("Şampiyon aşamasında maç olmaz");
   }
 
   const matches: Match[] = [];
@@ -147,8 +113,8 @@ function createMatchesFromPlayers(
     if (player1.isBye && player2.isBye) {
       throw new Error("BYE vs BYE pairing is not allowed");
     }
-    const byeWinner = getByeWinner(player1, player2);
-    const isBye = Boolean(byeWinner);
+    const byeWinner = player1.isBye ? player2 : player2.isBye ? player1 : null;
+    const byeLoser = byeWinner === player1 ? player2 : player1;
 
     matches.push({
       id: createId(`${phase.phaseKey}_match_${i / 2 + 1}`),
@@ -160,44 +126,24 @@ function createMatchesFromPlayers(
       player1,
       player2,
       rounds: [],
-      status: isBye ? "finished" : "waiting",
-      winner: byeWinner,
-      loser: isBye ? (byeWinner?.id === player1.id ? player2 : player1) : null,
-      isBye,
+      status: byeWinner ? "finished" : "waiting",
+      winner: byeWinner ? toPlayerRef(byeWinner) : null,
+      loser: byeWinner ? toPlayerRef(byeLoser) : null,
+      isBye: Boolean(byeWinner),
       pendingMoves: {},
+      missedMoves: {},
       roundEndsAt: null,
       countdownEndsAt: null,
       createdAt,
       startedAt: null,
-      finishedAt: isBye ? createdAt : null
+      finishedAt: byeWinner ? createdAt : null
     });
   }
 
   return matches;
 }
 
-function toMatchPlayer(player: Player): MatchPlayer {
-  return {
-    id: player.id,
-    name: player.name,
-    score: 0
-  };
-}
-
-function getByeWinner(player1: MatchPlayer, player2: MatchPlayer): PlayerRef | null {
-  if (player1.isBye && !player2.isBye) return toPlayerRef(player2);
-  if (!player1.isBye && player2.isBye) return toPlayerRef(player1);
-  return null;
-}
-
-function toPlayerRef(player: MatchPlayer): PlayerRef {
-  return {
-    id: player.id,
-    name: player.name,
-    isBye: player.isBye
-  };
-}
-
+/** Every BYE is paired with a real player, so no BYE-vs-BYE match can exist. */
 function padWithByes(players: MatchPlayer[], size: number) {
   const byesNeeded = size - players.length;
   if (byesNeeded < 0) throw new Error("Too many players for bracket size");
@@ -208,7 +154,7 @@ function padWithByes(players: MatchPlayer[], size: number) {
   for (let i = 0; i < byesNeeded; i += 1) {
     const player = remaining.shift();
     if (!player) throw new Error("BYE vs BYE pairing is not allowed");
-    seeded.push(player, makeBye(i + 1));
+    seeded.push(player, { id: `bye_${i + 1}`, name: "BYE", isBye: true, score: 0 });
   }
 
   seeded.push(...remaining);
@@ -216,18 +162,11 @@ function padWithByes(players: MatchPlayer[], size: number) {
   return seeded;
 }
 
-function makeBye(index: number): MatchPlayer {
-  return {
-    id: `bye_${index}`,
-    name: "BYE",
-    isBye: true,
-    score: 0
-  };
-}
-
 function shuffle<T>(items: T[]) {
-  return [...items]
-    .map((item) => ({ item, sort: Math.random() }))
-    .sort((a, b) => a.sort - b.sort)
-    .map(({ item }) => item);
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
 }

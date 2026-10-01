@@ -1,16 +1,10 @@
-import { AdminAction, Lobby, Tournament } from "./tournament.types.js";
+import { AdminAction, AdminActionType, Tournament } from "./tournament.types.js";
 import { createId, nowIso } from "./bracket.service.js";
-
-export function assertAdmin(playerId: string | null, lobby: Lobby) {
-  if (!playerId || playerId !== lobby.adminPlayerId) {
-    throw new Error("Unauthorized admin action");
-  }
-}
 
 export function createAdminAction(
   tournament: Tournament,
   adminPlayerId: string,
-  actionType: AdminAction["actionType"],
+  actionType: AdminActionType,
   payload: Record<string, unknown> = {}
 ): AdminAction {
   return {

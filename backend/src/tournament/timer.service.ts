@@ -1,108 +1,84 @@
-import { Match, Move } from "./tournament.types.js";
+import { Match } from "./tournament.types.js";
 
-export const MOVE_TIMEOUT_MS = 10_000;
-export const COUNTDOWN_MS = 3_000;
-const MOVES: Move[] = ["rock", "paper", "scissors"];
+// One keyed registry for every server-side timer (round clocks, bot moves, admin hand-off,
+// lobby compaction, auto-advance). Scheduling a key replaces any timer already under it.
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-const activeTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const countdownTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-export type MoveTimeoutHandler = (match: Match, playerId: string, move: Move) => void;
-
-export function startMatchClock(
-  match: Match,
-  onTimeout: MoveTimeoutHandler,
-  onReady?: (match: Match) => void,
-  options: { countdownMs?: number; moveMs?: number } = {}
-) {
-  const countdownMs = options.countdownMs ?? COUNTDOWN_MS;
-  const moveMs = options.moveMs ?? MOVE_TIMEOUT_MS;
-  clearMatchClock(match.id, match);
-  if (countdownMs <= 0) {
-    startMoveTimer(match, onTimeout, moveMs);
-    onReady?.(match);
-    return;
-  }
-  match.countdownEndsAt = new Date(Date.now() + countdownMs).toISOString();
-  const timer = setTimeout(() => {
-    countdownTimers.delete(match.id);
-    match.countdownEndsAt = null;
-    startMoveTimer(match, onTimeout, moveMs);
-    onReady?.(match);
-  }, countdownMs);
-  countdownTimers.set(match.id, timer);
+export function schedule(key: string, ms: number, fn: () => void) {
+  cancel(key);
+  timers.set(
+    key,
+    setTimeout(() => {
+      timers.delete(key);
+      try {
+        fn();
+      } catch (error) {
+        // A throw inside setTimeout would take the whole process down.
+        console.error(`timer ${key} failed`, error);
+      }
+    }, ms)
+  );
 }
 
-export function startMoveTimer(match: Match, onTimeout: MoveTimeoutHandler, moveMs = MOVE_TIMEOUT_MS) {
-  clearMoveTimer(match.id);
-
-  match.roundEndsAt = new Date(Date.now() + moveMs).toISOString();
-  const timer = setTimeout(() => {
-    activeTimers.delete(match.id);
-    match.roundEndsAt = null;
-
-    const missingPlayers: string[] = [];
-    if (!match.pendingMoves[match.player1.id] && !match.player1.isBye) {
-      missingPlayers.push(match.player1.id);
-    }
-    if (!match.pendingMoves[match.player2.id] && !match.player2.isBye) {
-      missingPlayers.push(match.player2.id);
-    }
-
-    for (const playerId of missingPlayers) {
-      const randomMove = MOVES[Math.floor(Math.random() * MOVES.length)];
-      onTimeout(match, playerId, randomMove);
-    }
-  }, moveMs);
-
-  activeTimers.set(match.id, timer);
+export function isScheduled(key: string) {
+  return timers.has(key);
 }
 
-export function ensureMoveTimer(match: Match, onTimeout: MoveTimeoutHandler, moveMs = MOVE_TIMEOUT_MS) {
-  if (activeTimers.has(match.id) || countdownTimers.has(match.id)) return;
-  startMoveTimer(match, onTimeout, moveMs);
+export function cancel(key: string) {
+  const timer = timers.get(key);
+  if (!timer) return;
+  clearTimeout(timer);
+  timers.delete(key);
 }
 
-export function clearMoveTimer(matchId: string, match?: Match) {
-  const existing = activeTimers.get(matchId);
-  if (existing) {
-    clearTimeout(existing);
-    activeTimers.delete(matchId);
-  }
-  if (match) match.roundEndsAt = null;
-}
-
-export function clearMatchClock(matchId: string, match?: Match) {
-  const countdown = countdownTimers.get(matchId);
-  if (countdown) {
-    clearTimeout(countdown);
-    countdownTimers.delete(matchId);
-  }
-  if (match) match.countdownEndsAt = null;
-  clearMoveTimer(matchId, match);
-}
-
-export function pauseMatchTimers(matches: Match[]) {
-  for (const match of matches) {
-    if (match.status === "playing") {
-      clearMatchClock(match.id, match);
-      match.status = "paused";
-    }
-  }
-}
-
-export function resumeMatchTimers(matches: Match[], onTimeout: MoveTimeoutHandler, moveMs = MOVE_TIMEOUT_MS) {
-  for (const match of matches) {
-    if (match.status === "paused") {
-      match.status = "playing";
-      startMoveTimer(match, onTimeout, moveMs);
-    }
+export function cancelPrefix(prefix: string) {
+  for (const key of timers.keys()) {
+    if (key.startsWith(prefix)) cancel(key);
   }
 }
 
 export function clearAllTimers() {
-  for (const timer of activeTimers.values()) clearTimeout(timer);
-  for (const timer of countdownTimers.values()) clearTimeout(timer);
-  activeTimers.clear();
-  countdownTimers.clear();
+  for (const timer of timers.values()) clearTimeout(timer);
+  timers.clear();
+}
+
+export interface RoundClock {
+  /** Lead-in before moves are accepted: match start countdown, or the reveal of the previous round. */
+  countdownMs: number;
+  moveMs: number;
+  onOpen: () => void;
+  onTimeout: (missingPlayerIds: string[]) => void;
+}
+
+export function startRoundClock(match: Match, clock: RoundClock) {
+  clearMatchClock(match);
+
+  const open = () => {
+    match.countdownEndsAt = null;
+    match.roundEndsAt = new Date(Date.now() + clock.moveMs).toISOString();
+    schedule(`move:${match.id}`, clock.moveMs, () => {
+      match.roundEndsAt = null;
+      if (match.status !== "playing") return;
+      const missing = [match.player1, match.player2]
+        .filter((player) => !player.isBye && !match.pendingMoves[player.id])
+        .map((player) => player.id);
+      if (missing.length) clock.onTimeout(missing);
+    });
+    clock.onOpen();
+  };
+
+  if (clock.countdownMs <= 0) {
+    open();
+    return;
+  }
+  match.countdownEndsAt = new Date(Date.now() + clock.countdownMs).toISOString();
+  schedule(`countdown:${match.id}`, clock.countdownMs, open);
+}
+
+export function clearMatchClock(match: Match) {
+  cancel(`countdown:${match.id}`);
+  cancel(`move:${match.id}`);
+  cancelPrefix(`bot:${match.id}:`);
+  match.countdownEndsAt = null;
+  match.roundEndsAt = null;
 }

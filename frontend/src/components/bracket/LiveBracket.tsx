@@ -1,8 +1,6 @@
 import type { CSSProperties } from "react";
-import { Trophy } from "lucide-react";
-import { PhaseBracketSnapshot, SafeMatch, Tournament } from "../../types";
+import { MatchPlayer, PhaseBracketSnapshot, SafeMatch, Tournament } from "../../types";
 import { statusLabel } from "../../lib/format";
-import { MatchSlot } from "./MatchSlot";
 
 interface LiveBracketProps {
   bracket: PhaseBracketSnapshot[];
@@ -10,133 +8,126 @@ interface LiveBracketProps {
   playerId: string | null;
 }
 
-type TreeNode =
-  | {
-      id: string;
-      kind: "match";
-      match: SafeMatch;
-      label: string;
-    }
-  | {
-      id: string;
-      kind: "placeholder";
-      label: string;
-    }
-  | {
-      id: string;
-      kind: "champion";
-      label: string;
-    };
+type DrawNode =
+  | { id: string; kind: "match"; match: SafeMatch }
+  | { id: string; kind: "placeholder" }
+  | { id: string; kind: "champion"; name: string | null };
 
 export function LiveBracket({ bracket, tournament, playerId }: LiveBracketProps) {
-  const treeRounds = buildTreeRounds(bracket, tournament);
+  if (bracket.length === 0) {
+    return <p className="empty-note">Tablo, admin eşleşmeleri çekince burada belirir.</p>;
+  }
 
+  const rounds = buildRounds(bracket, tournament);
   return (
-    <section className="bracket-board" aria-label="Canlı bracket">
-      {bracket.length === 0 ? (
-        <div className="empty-state">Tablo henüz yok. Admin eşleşmeleri oluşturunca burada açılır.</div>
-      ) : (
-        <div className="bracket-tree-scroll">
-          <div className="bracket-tree">
-            {treeRounds.map(({ phase, nodes }, phaseIndex) => (
-              <section
-                className={`tree-round ${phase.phaseKey === tournament?.currentPhaseKey ? "current" : ""} status-${phase.status}`}
-                key={phase.phaseKey}
-                style={{ "--tree-gap": `${Math.max(12, phaseIndex * 34 + 12)}px` } as CSSProperties}
-              >
-                <div className="phase-column-head">
-                  <span>{phase.name}</span>
-                  <small>{statusLabel(phase.status)}</small>
-                </div>
-                <div className="tree-node-list">
-                  {nodes.map((node, nodeIndex) => (
-                    <TreeNodeCard
-                      key={node.id}
-                      node={node}
-                      playerId={playerId}
-                      hasNextRound={phaseIndex < treeRounds.length - 1}
-                      hasPairConnector={nodeIndex % 2 === 0 ? nodeIndex + 1 < nodes.length : true}
-                      pairPosition={nodeIndex % 2 === 0 ? "top" : "bottom"}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function TreeNodeCard({
-  node,
-  playerId,
-  hasNextRound,
-  hasPairConnector,
-  pairPosition
-}: {
-  node: TreeNode;
-  playerId: string | null;
-  hasNextRound: boolean;
-  hasPairConnector: boolean;
-  pairPosition: "top" | "bottom";
-}) {
-  return (
-    <div
-      className={`tree-node-wrap ${hasNextRound ? "has-next" : ""} ${hasPairConnector ? "has-pair" : ""} pair-${pairPosition}`}
-    >
-      {node.kind === "match" ? (
-        <MatchSlot match={node.match} playerId={playerId} />
-      ) : node.kind === "champion" ? (
-        <article className="champion-tree-node">
-          <Trophy size={20} />
-          <span>Şampiyon</span>
-          <strong>{node.label}</strong>
-        </article>
-      ) : (
-        <article className="tree-placeholder-node">
-          <span>{node.label}</span>
-          <strong>Bekleniyor</strong>
-        </article>
-      )}
+    <div className="draw-scroll" role="region" aria-label="Turnuva tablosu" tabIndex={0}>
+      <div className="draw" style={{ "--draw-rounds": rounds.length } as CSSProperties}>
+        {rounds.map((round, roundIndex) => {
+          const hasNext = roundIndex < rounds.length - 1;
+          return (
+            <section className={`draw-col${round.isCurrent ? " is-current" : ""}`} key={round.key}>
+              <header className="draw-col__head">
+                <h3>{round.name}</h3>
+                <span>{statusLabel(round.status)}</span>
+              </header>
+              <div className="draw-col__body">
+                {pairs(round.nodes).map((pair) => (
+                  <div
+                    className={`draw-pair${hasNext ? (pair.length === 2 ? " join-pair" : " join-single") : ""}`}
+                    key={pair[0].id}
+                  >
+                    {pair.map((node) => (
+                      <DrawCell hasPrev={roundIndex > 0} key={node.id} node={node} playerId={playerId} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-function buildTreeRounds(bracket: PhaseBracketSnapshot[], tournament: Tournament | null) {
-  let previousPlayableCount = 0;
+function DrawCell({ node, playerId, hasPrev }: { node: DrawNode; playerId: string | null; hasPrev: boolean }) {
+  const prev = hasPrev ? " has-prev" : "";
+  if (node.kind === "champion") {
+    return (
+      <article className={`slot slot--champion${prev}`}>
+        <span className="slot__caption">Şampiyon</span>
+        <strong>{node.name ?? "—"}</strong>
+      </article>
+    );
+  }
+  if (node.kind === "placeholder") {
+    return (
+      <article className={`slot slot--empty${prev}`} aria-label="Henüz belli değil">
+        <div className="slot__line">—</div>
+        <div className="slot__line">—</div>
+      </article>
+    );
+  }
 
+  const { match } = node;
+  const mine = match.player1.id === playerId || match.player2.id === playerId;
+  const live = match.status === "playing" || match.status === "paused";
+  return (
+    <article className={`slot status-${match.status}${mine ? " is-mine" : ""}${live ? " is-live" : ""}${prev}`}>
+      <SlotLine match={match} player={match.player1} playerId={playerId} />
+      <SlotLine match={match} player={match.player2} playerId={playerId} />
+      {match.status === "walkover" && <span className="slot__note">hükmen</span>}
+    </article>
+  );
+}
+
+function SlotLine({ match, player, playerId }: { match: SafeMatch; player: MatchPlayer; playerId: string | null }) {
+  const decided = Boolean(match.winner);
+  const isWinner = match.winner?.id === player.id;
+  const classes = [
+    "slot__line",
+    player.isBye ? "is-bye" : "",
+    player.id === playerId ? "is-me" : "",
+    decided && isWinner ? "is-winner" : "",
+    decided && !isWinner ? "is-loser" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <div className={classes}>
+      <span className="slot__name">{player.name}</span>
+      <span className="slot__score">{player.isBye || match.isBye ? "" : player.score}</span>
+    </div>
+  );
+}
+
+function buildRounds(bracket: PhaseBracketSnapshot[], tournament: Tournament | null) {
+  let previousCount = 0;
   return bracket.map((phase) => {
-    const nodes: TreeNode[] =
-      phase.phaseKey === "champion"
-        ? [
-            {
-              id: `${phase.phaseKey}_champion`,
-              kind: "champion",
-              label: tournament?.champion?.name ?? "Bekleniyor"
-            }
-          ]
-        : phase.matches.length > 0
-          ? phase.matches.map((match) => ({
-              id: match.id,
-              kind: "match" as const,
-              match,
-              label: `${phase.name} #${match.matchNumber}`
-            }))
-          : Array.from({ length: Math.max(1, Math.ceil(previousPlayableCount / 2)) }, (_, index) => ({
-              id: `${phase.phaseKey}_placeholder_${index + 1}`,
-              kind: "placeholder" as const,
-              label: `${phase.name} #${index + 1}`
-            }));
-
-    if (phase.phaseKey !== "champion") {
-      previousPlayableCount = nodes.length;
+    let nodes: DrawNode[];
+    if (phase.phaseKey === "champion") {
+      nodes = [{ id: "champion", kind: "champion", name: tournament?.champion?.name ?? null }];
+    } else if (phase.matches.length > 0) {
+      nodes = phase.matches.map((match) => ({ id: match.id, kind: "match", match }));
+    } else {
+      nodes = Array.from({ length: Math.max(1, previousCount / 2) }, (_, index) => ({
+        id: `${phase.phaseKey}-${index}`,
+        kind: "placeholder"
+      }));
     }
-
+    if (phase.phaseKey !== "champion") previousCount = nodes.length;
     return {
-      phase,
+      key: phase.phaseKey,
+      name: phase.name,
+      status: phase.status,
+      isCurrent: phase.phaseKey === tournament?.currentPhaseKey && tournament.status !== "finished",
       nodes
     };
   });
+}
+
+function pairs<T>(items: T[]) {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += 2) result.push(items.slice(i, i + 2));
+  return result;
 }

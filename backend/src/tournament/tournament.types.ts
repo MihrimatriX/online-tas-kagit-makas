@@ -1,3 +1,5 @@
+// Shared with the frontend via `import type` (frontend/src/types.ts) — keep this file import-free.
+
 export type TournamentPhaseKey =
   | "round_of_64"
   | "round_of_32"
@@ -9,12 +11,13 @@ export type TournamentPhaseKey =
 
 export type PlayablePhaseKey = Exclude<TournamentPhaseKey, "champion">;
 
-export type TournamentStatus = "waiting" | "seeded" | "active" | "paused" | "finished";
+export type TournamentStatus = "seeded" | "active" | "paused" | "finished";
 export type LobbyStatus = "waiting" | "active" | "finished";
 export type PhaseStatus = "locked" | "waiting" | "active" | "completed";
 export type MatchStatus = "waiting" | "playing" | "paused" | "finished" | "walkover";
 export type Move = "rock" | "paper" | "scissors";
-export type RoundAdvanceMode = "manual" | "automatic" | "hybrid";
+
+export const MOVES: Move[] = ["rock", "paper", "scissors"];
 
 export const PHASE_ORDER: TournamentPhaseKey[] = [
   "round_of_64",
@@ -55,6 +58,9 @@ export interface Player {
   createdAt: string;
 }
 
+/** What other clients may see about a player. */
+export type PublicPlayer = Omit<Player, "socketId" | "reconnectToken">;
+
 export interface RoomSettings {
   winningScore: number;
   moveSeconds: number;
@@ -75,13 +81,10 @@ export function normalizeRoomSettings(
   input: Partial<RoomSettings> | undefined,
   current: RoomSettings = defaultRoomSettings()
 ): RoomSettings {
-  const winningScore = clamp(Number(input?.winningScore ?? current.winningScore), 2, 5);
-  const moveSeconds = clamp(Number(input?.moveSeconds ?? current.moveSeconds), 5, 20);
-  const countdownSeconds = clamp(Number(input?.countdownSeconds ?? current.countdownSeconds), 0, 5);
   return {
-    winningScore,
-    moveSeconds,
-    countdownSeconds,
+    winningScore: clamp(Number(input?.winningScore ?? current.winningScore), 2, 5),
+    moveSeconds: clamp(Number(input?.moveSeconds ?? current.moveSeconds), 5, 20),
+    countdownSeconds: clamp(Number(input?.countdownSeconds ?? current.countdownSeconds), 0, 5),
     autoAdvance: Boolean(input?.autoAdvance ?? current.autoAdvance)
   };
 }
@@ -91,19 +94,11 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-export function clockFromLobby(lobby?: { settings?: RoomSettings } | null) {
-  const settings = lobby?.settings ?? defaultRoomSettings();
-  return {
-    winningScore: settings.winningScore,
-    moveMs: settings.moveSeconds * 1000,
-    countdownMs: settings.countdownSeconds * 1000
-  };
-}
-
 export interface PlayerRef {
   id: string;
   name: string;
   isBye?: boolean;
+  isTest?: boolean;
 }
 
 export interface Lobby {
@@ -118,7 +113,10 @@ export interface Lobby {
   overlayEnabled: boolean;
   settings: RoomSettings;
   createdAt: string;
+  lastActiveAt: string;
 }
+
+export type PublicLobby = Omit<Lobby, "players"> & { players: PublicPlayer[] };
 
 export interface Tournament {
   id: string;
@@ -129,7 +127,6 @@ export interface Tournament {
   currentPhaseKey: TournamentPhaseKey;
   phases: TournamentPhase[];
   champion: PlayerRef | null;
-  roundAdvanceMode: RoundAdvanceMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -144,9 +141,6 @@ export interface TournamentPhase {
   winners: PlayerRef[];
   startedAt: string | null;
   completedAt: string | null;
-  createdBy: "system" | "admin";
-  startedBy: string | null;
-  lockedByAdmin: boolean;
 }
 
 export interface MatchPlayer extends PlayerRef {
@@ -175,7 +169,10 @@ export interface Match {
   loser: PlayerRef | null;
   isBye: boolean;
   pendingMoves: Partial<Record<string, Move>>;
+  /** Consecutive move windows each player let expire. Reset when they move themselves. */
+  missedMoves: Partial<Record<string, number>>;
   roundEndsAt: string | null;
+  /** Set while the match is counting in (rounds empty) or showing the last round (rounds non-empty). */
   countdownEndsAt: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -206,27 +203,27 @@ export interface ActivityFeedEvent {
   phaseId?: string;
 }
 
+export type AdminActionType =
+  | "TOURNAMENT_SEEDED"
+  | "TOURNAMENT_UNSEEDED"
+  | "TOURNAMENT_STARTED"
+  | "PHASE_PAUSED"
+  | "PHASE_RESUMED"
+  | "PHASE_COMPLETED"
+  | "PHASE_ADVANCED"
+  | "MATCH_RESTARTED"
+  | "MATCH_WINNER_ASSIGNED"
+  | "CHAMPION_CROWNED"
+  | "PLAYER_KICKED"
+  | "FEED_CLEARED"
+  | "ADMIN_TRANSFERRED"
+  | "ROOM_UPDATED";
+
 export interface AdminAction {
   id: string;
   tournamentId: string;
   adminPlayerId: string;
-  actionType:
-    | "TOURNAMENT_SEEDED"
-    | "TOURNAMENT_STARTED"
-    | "PHASE_STARTED"
-    | "PHASE_PAUSED"
-    | "PHASE_RESUMED"
-    | "PHASE_COMPLETED"
-    | "PHASE_ADVANCED"
-    | "MATCH_RESTARTED"
-    | "MATCH_WINNER_ASSIGNED"
-    | "CHAMPION_SHOWN"
-    | "PLAYER_KICKED"
-    | "FEED_CLEARED"
-    | "OVERLAY_TOGGLED"
-    | "ADVANCE_MODE_SET"
-    | "ADMIN_TRANSFERRED"
-    | "ROOM_UPDATED";
+  actionType: AdminActionType;
   payload: Record<string, unknown>;
   createdAt: string;
 }
@@ -238,15 +235,24 @@ export interface PhaseBracketSnapshot {
   matches: SafeMatch[];
 }
 
-export type SafeMatch = Omit<Match, "pendingMoves"> & { lockedPlayerIds: string[] };
+export type SafeMatch = Omit<Match, "pendingMoves" | "missedMoves"> & { lockedPlayerIds: string[] };
 
 export interface TournamentSnapshot {
-  lobby: Lobby;
+  lobby: PublicLobby;
   tournament: Tournament | null;
   bracket: PhaseBracketSnapshot[];
   activeMatches: SafeMatch[];
   feed: ActivityFeedEvent[];
   adminActions: AdminAction[];
+  /** Server clock at emit time; clients derive their clock offset from it. */
+  serverTime: string;
+}
+
+export interface SessionReady {
+  playerId: string;
+  lobbyId: string;
+  lobbyCode: string;
+  reconnectToken: string;
 }
 
 export interface ClientSession {

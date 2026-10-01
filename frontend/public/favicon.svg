@@ -1,4 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#0f9d72"/>
-  <text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" font-weight="700" fill="#fff">RPS</text>
+  <rect width="32" height="32" rx="3" fill="#f4efe6"/>
+  <rect x="1.5" y="1.5" width="29" height="29" rx="2" fill="none" stroke="#2a221c" stroke-width="2"/>
+  <path d="M9 7v18M9 7h7.5a4.5 4.5 0 0 1 0 9H9M14.5 16l6 9" fill="none" stroke="#2a221c" stroke-width="3" stroke-linecap="square"/>
+  <rect x="21" y="7" width="3.5" height="3.5" fill="#c23a22"/>
 </svg>

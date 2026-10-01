@@ -1,91 +1,48 @@
 import { Match, MatchRound, Move, PlayerRef } from "./tournament.types.js";
-import { nowIso } from "./bracket.service.js";
+import { nowIso, toPlayerRef } from "./bracket.service.js";
 
 export interface MoveResolution {
-  match: Match;
   round: MatchRound | null;
-  isRoundComplete: boolean;
   isMatchComplete: boolean;
 }
 
 export function startMatch(match: Match) {
   if (match.status !== "waiting") return match;
-
   match.status = "playing";
   match.startedAt = nowIso();
   return match;
 }
 
-export function registerMove(match: Match, playerId: string, move: Move, winningScore = 3): MoveResolution {
-  if (match.status !== "playing") {
-    throw new Error("Maç oynanabilir değil");
-  }
-
-  if (match.countdownEndsAt && new Date(match.countdownEndsAt).getTime() > Date.now()) {
+export function registerMove(match: Match, playerId: string, move: Move, winningScore: number): MoveResolution {
+  if (match.status !== "playing") throw new Error("Maç şu an oynanmıyor");
+  if (match.countdownEndsAt && Date.parse(match.countdownEndsAt) > Date.now()) {
     throw new Error("Geri sayım bitmeden hamle yapılamaz");
   }
-
   if (match.player1.id !== playerId && match.player2.id !== playerId) {
     throw new Error("Bu maçın oyuncusu değilsin");
   }
-
-  if (match.pendingMoves[playerId]) {
-    throw new Error("Hamle zaten kilitli");
-  }
+  if (match.pendingMoves[playerId]) throw new Error("Hamle zaten kilitli");
 
   match.pendingMoves[playerId] = move;
-
   const p1Move = match.pendingMoves[match.player1.id];
   const p2Move = match.pendingMoves[match.player2.id];
+  if (!p1Move || !p2Move) return { round: null, isMatchComplete: false };
 
-  if (!p1Move || !p2Move) {
-    return {
-      match,
-      round: null,
-      isRoundComplete: false,
-      isMatchComplete: false
-    };
-  }
-
-  const roundWinnerId = resolveRoundWinner(match.player1.id, p1Move, match.player2.id, p2Move);
-  const round: MatchRound = {
-    roundNumber: match.rounds.length + 1,
-    p1Move,
-    p2Move,
-    winner: roundWinnerId
-  };
-
+  const winner = resolveRoundWinner(match.player1.id, p1Move, match.player2.id, p2Move);
+  const round: MatchRound = { roundNumber: match.rounds.length + 1, p1Move, p2Move, winner };
   match.rounds.push(round);
   match.pendingMoves = {};
+  if (winner === match.player1.id) match.player1.score += 1;
+  if (winner === match.player2.id) match.player2.score += 1;
 
-  if (roundWinnerId === match.player1.id) {
-    match.player1.score += 1;
-  }
-
-  if (roundWinnerId === match.player2.id) {
-    match.player2.score += 1;
-  }
-
-  let isMatchComplete = false;
-  if (match.player1.score >= winningScore || match.player2.score >= winningScore) {
-    finishMatch(match, match.player1.score > match.player2.score ? match.player1 : match.player2);
-    isMatchComplete = true;
-  }
-
-  return {
-    match,
-    round,
-    isRoundComplete: true,
-    isMatchComplete
-  };
+  const leader = match.player1.score >= winningScore ? match.player1 : match.player2.score >= winningScore ? match.player2 : null;
+  if (leader) finishMatch(match, leader);
+  return { round, isMatchComplete: Boolean(leader) };
 }
 
 export function assignWinner(match: Match, winnerId: string, status: "finished" | "walkover" = "finished") {
   const winner = [match.player1, match.player2].find((player) => player.id === winnerId);
-  if (!winner) {
-    throw new Error("Winner is not part of this match");
-  }
-
+  if (!winner) throw new Error("Kazanan bu maçın oyuncusu değil");
   finishMatch(match, winner, status);
   return match;
 }
@@ -95,6 +52,7 @@ export function resetMatch(match: Match) {
   match.player2.score = 0;
   match.rounds = [];
   match.pendingMoves = {};
+  match.missedMoves = {};
   match.roundEndsAt = null;
   match.countdownEndsAt = null;
   match.status = "waiting";
@@ -109,32 +67,43 @@ export function isValidMove(value: unknown): value is Move {
   return value === "rock" || value === "paper" || value === "scissors";
 }
 
+export function isMatchDone(match: Match) {
+  return match.status === "finished" || match.status === "walkover";
+}
+
+export function opponentOf(match: Match, playerId: string) {
+  return match.player1.id === playerId ? match.player2 : match.player1;
+}
+
+export type TimeoutAction = "random_move" | "forfeit_match";
+
+/**
+ * A player let the move clock run out. Decide whether the server plays a random move
+ * for them or hands the match to their opponent.
+ *
+ * @param missedInARow how many move windows in a row this player has now missed (1 = first miss)
+ * @param isOnline     whether their socket is currently connected (bots always count as online)
+ */
+export function timeoutAction(missedInARow: number, isOnline: boolean): TimeoutAction {
+  // TODO(human): pick the AFK / disconnect policy.
+  void missedInARow;
+  void isOnline;
+  return "random_move";
+}
+
 function finishMatch(match: Match, winner: PlayerRef, status: "finished" | "walkover" = "finished") {
-  const loser = winner.id === match.player1.id ? match.player2 : match.player1;
-  match.winner = {
-    id: winner.id,
-    name: winner.name,
-    isBye: winner.isBye
-  };
-  match.loser = {
-    id: loser.id,
-    name: loser.name,
-    isBye: loser.isBye
-  };
+  match.winner = toPlayerRef(winner);
+  match.loser = toPlayerRef(opponentOf(match, winner.id));
   match.status = status;
+  match.pendingMoves = {};
+  match.roundEndsAt = null;
+  match.countdownEndsAt = null;
   match.finishedAt = nowIso();
 }
 
+const BEATS: Record<Move, Move> = { rock: "scissors", paper: "rock", scissors: "paper" };
+
 function resolveRoundWinner(p1Id: string, p1Move: Move, p2Id: string, p2Move: Move) {
   if (p1Move === p2Move) return null;
-
-  if (
-    (p1Move === "rock" && p2Move === "scissors") ||
-    (p1Move === "paper" && p2Move === "rock") ||
-    (p1Move === "scissors" && p2Move === "paper")
-  ) {
-    return p1Id;
-  }
-
-  return p2Id;
+  return BEATS[p1Move] === p2Move ? p1Id : p2Id;
 }

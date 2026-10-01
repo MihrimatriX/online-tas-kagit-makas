@@ -1,388 +1,308 @@
-import { useEffect, useMemo, useState } from "react";
-import { Brackets, Gamepad2, LayoutDashboard, Monitor, Trophy, Users } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { LogOut, Volume2, VolumeX } from "lucide-react";
+import { LiveBracket } from "./components/bracket/LiveBracket";
 import { ActiveMatchesPanel } from "./components/live/ActiveMatchesPanel";
 import { ActivityFeed } from "./components/live/ActivityFeed";
-import { socket } from "./lib/socket";
-import { copyText, overlayUrl, readRoute, roomSettings } from "./lib/format";
+import { syncServerClock } from "./lib/clock";
+import { copyText, joinUrl, overlayUrl, readRoute } from "./lib/format";
 import { applyClientSeo } from "./lib/seo";
-import { soundAssigned, soundReveal, soundWin } from "./lib/sound";
-import { AdminPage } from "./pages/AdminPage";
-import { BracketPage } from "./pages/BracketPage";
-import { LandingPage } from "./pages/LandingPage";
+import { clearSession, loadSession, saveSession } from "./lib/session";
+import { socket } from "./lib/socket";
+import { isMuted, setMuted, soundAssigned, soundLose, soundReveal, soundWin } from "./lib/sound";
+import { AdminNextStep, AdminPage, SendCommand } from "./pages/AdminPage";
+import { LandingPage, Wordmark } from "./pages/LandingPage";
 import { LobbyPage } from "./pages/LobbyPage";
-import { MatchPage } from "./pages/MatchPage";
-import { OverlayPage, SpectatorOverlay } from "./pages/OverlayPage";
+import { MatchPage, PlayerStatus } from "./pages/MatchPage";
+import { SpectatorOverlay } from "./pages/OverlayPage";
 import { ResultPage } from "./pages/ResultPage";
-import { MatchRound, Move, SessionState, TournamentSnapshot } from "./types";
+import { SessionState, TournamentSnapshot } from "./types";
 
-type ViewKey = "lobby" | "admin" | "match" | "bracket" | "result" | "overlay";
-type MobilePane = "main" | "live";
-
-const SESSION_KEY = "tmk_session";
-
-function readSavedSession(): SessionState | null {
-  try {
-    const saved = sessionStorage.getItem(SESSION_KEY);
-    if (!saved) return null;
-    const parsed = JSON.parse(saved) as SessionState;
-    if (!parsed.playerId || !parsed.lobbyCode || !parsed.reconnectToken) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function emitReconnect() {
-  const saved = readSavedSession();
-  if (!saved) return;
-  socket.emit("session:reconnect", {
-    lobbyCode: saved.lobbyCode,
-    playerId: saved.playerId,
-    reconnectToken: saved.reconnectToken
-  });
-}
+type Tab = "arena" | "bracket" | "admin";
 
 export function App() {
-  const route = useMemo(() => readRoute(), []);
+  const route = useMemo(readRoute, []);
+  if (route.overlayCode) return <SpectatorOverlay chroma={route.chroma} code={route.overlayCode} />;
+  return <PlayerApp initialCode={route.joinCode} />;
+}
+
+function PlayerApp({ initialCode }: { initialCode: string }) {
   const [session, setSession] = useState<SessionState | null>(null);
   const [snapshot, setSnapshot] = useState<TournamentSnapshot | null>(null);
-  const [view, setView] = useState<ViewKey>("lobby");
-  const [selectedMove, setSelectedMove] = useState<Move | null>(null);
-  const [reveal, setReveal] = useState<MatchRound | null>(null);
+  const [tab, setTab] = useState<Tab>("arena");
   const [toast, setToast] = useState<string | null>(null);
   const [connected, setConnected] = useState(socket.connected);
-  const [mobilePane, setMobilePane] = useState<MobilePane>("main");
+  const [muted, setMutedState] = useState(isMuted);
+  const [restoring, setRestoring] = useState(() => Boolean(loadSession()));
+  const toastTimer = useRef<number | undefined>(undefined);
 
   function showToast(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(null), 3200);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3600);
   }
 
   useEffect(() => {
+    const reset = (message?: string) => {
+      clearSession();
+      setRestoring(false);
+      setSession(null);
+      setSnapshot(null);
+      setTab("arena");
+      if (message) showToast(message);
+    };
+    const reconnect = () => {
+      const saved = loadSession();
+      if (saved) socket.emit("session:reconnect", saved);
+    };
+
+    // socket.io listener signature; payload shapes are typed per handler below.
+    const handlers: Record<string, (...args: any[]) => void> = {
+      connect: () => {
+        setConnected(true);
+        reconnect();
+      },
+      disconnect: () => setConnected(false),
+      "session:ready": (payload: SessionState) => {
+        saveSession(payload);
+        setRestoring(false);
+        setSession(payload);
+      },
+      "session:invalid": () => reset(loadSession() ? "Önceki oturumun sona ermiş. Yeniden katılabilirsin." : undefined),
+      "session:left": () => reset(),
+      "session:kicked": () => reset("Yönetici seni lobiden çıkardı."),
+      "tournament:snapshot": (payload: TournamentSnapshot) => {
+        syncServerClock(payload.serverTime);
+        setSnapshot(payload);
+      },
+      "match:assigned": () => {
+        setTab("arena");
+        soundAssigned();
+      },
+      "match:finished": ({ winnerId }: { winnerId?: string }) => {
+        if (winnerId === loadSession()?.playerId) soundWin();
+        else soundLose();
+      },
+      "tournament:winner": () => {
+        setTab("arena");
+        soundWin();
+      },
+      "app:error": ({ message }: { message: string }) => showToast(message)
+    };
+
+    for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler);
+    if (socket.connected) reconnect();
+    return () => {
+      for (const [event, handler] of Object.entries(handlers)) socket.off(event, handler);
+    };
+  }, []);
+
+  useEffect(() => {
     const origin = window.location.origin;
-    if (route.overlayCode) {
-      applyClientSeo({
-        title: `Yayın ${route.overlayCode} — RPS Arena`,
-        description: "OBS overlay — turnuva yayını",
-        url: `${origin}/overlay/${route.overlayCode}`,
-        robots: "noindex, nofollow"
-      });
-      return;
-    }
     if (snapshot && session) {
       applyClientSeo({
         title: `${snapshot.lobby.name} · ${snapshot.lobby.code} — RPS Arena`,
         description: `${snapshot.lobby.players.length} oyuncu · ${snapshot.lobby.name} lobisi. Kod: ${snapshot.lobby.code}`,
-        url: `${origin}/?code=${snapshot.lobby.code}`
+        url: joinUrl(snapshot.lobby.code)
       });
-      return;
-    }
-    if (route.joinCode) {
+    } else if (initialCode) {
       applyClientSeo({
-        title: `Lobi ${route.joinCode} — RPS Arena`,
-        description: `RPS Arena lobisine davetlisin. Kod: ${route.joinCode}`,
-        url: `${origin}/?code=${route.joinCode}`
+        title: `Lobi ${initialCode} — RPS Arena`,
+        description: `RPS Arena lobisine davetlisin. Kod: ${initialCode}`,
+        url: joinUrl(initialCode)
       });
-      return;
+    } else {
+      applyClientSeo({ url: `${origin}/` });
     }
-    applyClientSeo({ url: `${origin}/` });
-  }, [route, session, snapshot]);
-
-  useEffect(() => {
-    const onReady = (payload: SessionState) => {
-      setSession(payload);
-      try {
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify(payload));
-      } catch {
-        // ignore
-      }
-    };
-
-    const onSnapshot = (payload: TournamentSnapshot) => {
-      setSnapshot(payload);
-    };
-
-    const onAssigned = () => {
-      setSelectedMove(null);
-      setReveal(null);
-      setView("match");
-      setMobilePane("main");
-      soundAssigned();
-    };
-
-    const onRoundResult = (payload: { round: MatchRound }) => {
-      setSelectedMove(null);
-      setReveal(payload.round);
-      soundReveal();
-      window.setTimeout(() => setReveal(null), 2200);
-    };
-
-    const onFinished = () => {
-      setSelectedMove(null);
-      setReveal(null);
-      setView("bracket");
-      soundWin();
-    };
-
-    const onWinner = () => {
-      setView("result");
-      soundWin();
-    };
-
-    const onMoveAccepted = ({ move }: { move: Move }) => {
-      setSelectedMove(move);
-    };
-
-    const onError = ({ message }: { message: string }) => {
-      showToast(message);
-    };
-
-    const onConnect = () => {
-      setConnected(true);
-      if (!readRoute().overlayCode) emitReconnect();
-    };
-
-    const onDisconnect = () => {
-      setConnected(false);
-    };
-
-    socket.on("session:ready", onReady);
-    socket.on("tournament:snapshot", onSnapshot);
-    socket.on("match:assigned", onAssigned);
-    socket.on("match:roundResult", onRoundResult);
-    socket.on("match:finished", onFinished);
-    socket.on("tournament:winner", onWinner);
-    socket.on("match:moveAccepted", onMoveAccepted);
-    socket.on("app:error", onError);
-    socket.on("connect", onConnect);
-    socket.on("disconnect", onDisconnect);
-
-    if (socket.connected && !route.overlayCode) {
-      emitReconnect();
-    }
-
-    return () => {
-      socket.off("session:ready", onReady);
-      socket.off("tournament:snapshot", onSnapshot);
-      socket.off("match:assigned", onAssigned);
-      socket.off("match:roundResult", onRoundResult);
-      socket.off("match:finished", onFinished);
-      socket.off("tournament:winner", onWinner);
-      socket.off("match:moveAccepted", onMoveAccepted);
-      socket.off("app:error", onError);
-      socket.off("connect", onConnect);
-      socket.off("disconnect", onDisconnect);
-    };
-  }, []);
+  }, [initialCode, session, snapshot]);
 
   const myMatch = useMemo(() => {
     if (!snapshot || !session) return null;
     return (
-      snapshot.bracket
-        .flatMap((phase) => phase.matches)
-        .find(
-          (match) =>
-            (match.status === "playing" || match.status === "paused") &&
-            (match.player1.id === session.playerId || match.player2.id === session.playerId)
-        ) ?? null
+      snapshot.activeMatches.find(
+        (match) => match.player1.id === session.playerId || match.player2.id === session.playerId
+      ) ?? null
     );
   }, [snapshot, session]);
 
-  if (route.overlayCode) {
-    return (
-      <>
-        <SpectatorOverlay code={route.overlayCode} chroma={route.chroma} />
-        {toast && <div className="toast">{toast}</div>}
-      </>
-    );
-  }
+  // Reveal sound when a round in my match resolves.
+  const roundsSeen = useRef(0);
+  useEffect(() => {
+    const count = myMatch?.rounds.length ?? 0;
+    if (count > roundsSeen.current) soundReveal();
+    roundsSeen.current = count;
+  }, [myMatch?.id, myMatch?.rounds.length]);
 
-  if (!session || !snapshot) {
+  if (!session || !snapshot || snapshot.lobby.id !== session.lobbyId) {
     return (
       <>
         <LandingPage
-          initialCode={route.joinCode}
+          connected={connected}
+          restoring={restoring}
+          initialCode={initialCode}
           onCreateLobby={(name) => socket.emit("lobby:create", { name })}
           onJoinLobby={(name, lobbyCode) => socket.emit("lobby:join", { name, lobbyCode })}
           onJoinRandomLobby={(name) => socket.emit("lobby:joinRandom", { name })}
         />
-        {!connected && <div className="toast">Sunucuya bağlanılıyor...</div>}
-        {toast && <div className="toast">{toast}</div>}
+        <Toast message={toast} />
       </>
     );
   }
 
-  const isAdmin = session.playerId === snapshot.lobby.adminPlayerId;
-  const currentPhase = snapshot.tournament?.phases[snapshot.tournament.currentPhaseIndex] ?? null;
-  const overlayHref = overlayUrl(snapshot.lobby.code);
-  const chromaHref = overlayUrl(snapshot.lobby.code, true);
-  const moveLocked = Boolean(selectedMove || myMatch?.lockedPlayerIds?.includes(session.playerId));
+  const { lobby, tournament } = snapshot;
+  const isAdmin = session.playerId === lobby.adminPlayerId;
+  const phase = tournament?.phases[tournament.currentPhaseIndex];
+  const activeTab = tab === "admin" && !isAdmin ? "arena" : tab;
 
-  async function copyValue(value: string, ok: string) {
-    const copied = await copyText(value);
-    showToast(copied ? ok : "Kopyalanamadı — adresi elle kopyala");
+  const send: SendCommand = (command, payload) => socket.emit(command, payload ?? {});
+  const copy = async (value: string, ok: string) => showToast((await copyText(value)) ? ok : "Kopyalanamadı, adresi elle kopyala");
+  const leave = () => {
+    const warning =
+      tournament && tournament.status !== "finished"
+        ? "Turnuvadan çekilirsen açık maçın rakibine hükmen verilir. Ayrılmak istiyor musun?"
+        : "Lobiden ayrılmak istiyor musun?";
+    if (window.confirm(warning)) socket.emit("lobby:leave");
+  };
+  const kick = (playerId: string, name: string) => {
+    if (window.confirm(`${name} lobiden çıkarılsın mı?`)) send("admin:kick", { playerId });
+  };
+
+  let arena;
+  if (!tournament) {
+    arena = (
+      <LobbyPage
+        isAdmin={isAdmin}
+        lobby={lobby}
+        onCopyCode={() => void copy(lobby.code, "Lobi kodu kopyalandı")}
+        onCopyLink={() => void copy(joinUrl(lobby.code), "Davet linki kopyalandı")}
+        onKick={kick}
+        onReady={() => socket.emit("lobby:ready")}
+        playerId={session.playerId}
+      />
+    );
+  } else if (tournament.status === "finished") {
+    arena = (
+      <ResultPage
+        isAdmin={isAdmin}
+        onNewTournament={() => send("admin:newTournament")}
+        onOpenBracket={() => setTab("bracket")}
+        playerId={session.playerId}
+        snapshot={snapshot}
+      />
+    );
+  } else if (myMatch) {
+    arena = (
+      <MatchPage
+        match={myMatch}
+        onMove={(matchId, move) => socket.emit("match:move", { matchId, move })}
+        playerId={session.playerId}
+        settings={lobby.settings}
+      />
+    );
+  } else {
+    arena = (
+      <PlayerStatus
+        autoAdvance={lobby.settings.autoAdvance}
+        bracket={snapshot.bracket}
+        onOpenBracket={() => setTab("bracket")}
+        playerId={session.playerId}
+        tournament={tournament}
+      />
+    );
   }
 
   return (
-    <div className="app-shell">
-      {view !== "overlay" && (
-        <header className="topbar">
-          <button className="brand-button" type="button" onClick={() => setView("lobby")}>
-            <span>RPS</span>
-            <strong>ARENA</strong>
-          </button>
-          <nav className="top-nav" aria-label="Ana görünüm">
-            <NavButton active={view === "lobby"} icon={<Users size={16} />} label="Lobi" onClick={() => setView("lobby")} />
-            {isAdmin && (
-              <NavButton
-                active={view === "admin"}
-                icon={<LayoutDashboard size={16} />}
-                label="Yönetim"
-                onClick={() => setView("admin")}
-              />
-            )}
-            <NavButton
-              active={view === "match"}
-              icon={<Gamepad2 size={16} />}
-              label="Maçım"
-              onClick={() => setView("match")}
-            />
-            <NavButton
-              active={view === "bracket"}
-              icon={<Brackets size={16} />}
-              label="Tablo"
-              onClick={() => setView("bracket")}
-            />
-            <NavButton
-              active={view === "result"}
-              icon={<Trophy size={16} />}
-              label="Şampiyon"
-              onClick={() => setView("result")}
-            />
-            {isAdmin && (
-              <NavButton
-                active={false}
-                icon={<Monitor size={16} />}
-                label="Yayın"
-                onClick={() => setView("overlay")}
-              />
-            )}
-          </nav>
-          <div className="live-pill">
-            <span className={connected ? "live-dot" : "live-dot offline"} />
-            {connected
-              ? (snapshot.tournament?.phases[snapshot.tournament.currentPhaseIndex]?.name ?? "Lobi")
-              : "Kopuk"}
+    <div className="app">
+      <header className="masthead">
+        <div className="masthead__row">
+          <Wordmark />
+          <div className="masthead__lobby">
+            <strong>{lobby.name}</strong>
+            <span className="masthead__code">{lobby.code}</span>
           </div>
-        </header>
-      )}
-
-      <div className={`content-shell ${view === "overlay" ? "overlay-mode" : ""} ${mobilePane === "live" ? "show-live" : "show-main"}`}>
-        <div className="mobile-rail-tabs" role="tablist">
-          <button className={mobilePane === "main" ? "active" : ""} type="button" onClick={() => setMobilePane("main")}>
-            {view === "match" ? "Maçım" : view === "admin" ? "Yönetim" : view === "bracket" ? "Tablo" : "Lobi"}
-          </button>
-          <button className={mobilePane === "live" ? "active" : ""} type="button" onClick={() => setMobilePane("live")}>
-            Canlı
-          </button>
+          <span className="masthead__phase">
+            <span className={`presence${connected ? "" : " is-off"}`} />
+            {!connected
+              ? "Bağlantı koptu, yeniden bağlanılıyor…"
+              : tournament?.status === "finished"
+                ? "Turnuva bitti"
+                : tournament?.status === "paused"
+                  ? `${phase?.name} · duraklatıldı`
+                  : tournament?.status === "seeded"
+                    ? "Kura çekildi"
+                    : (phase?.name ?? "Lobi")}
+          </span>
+          <div className="masthead__tools">
+            <button
+              aria-label={muted ? "Sesi aç" : "Sesi kapat"}
+              aria-pressed={muted}
+              className="icon-btn"
+              onClick={() => {
+                setMuted(!muted);
+                setMutedState(!muted);
+              }}
+              title={muted ? "Sesi aç" : "Sesi kapat"}
+              type="button"
+            >
+              {muted ? <VolumeX size={18} aria-hidden="true" /> : <Volume2 size={18} aria-hidden="true" />}
+            </button>
+            <button aria-label="Lobiden ayrıl" className="btn btn--sm btn--quiet" onClick={leave} type="button">
+              <LogOut size={16} aria-hidden="true" />
+              <span className="masthead__leave">Ayrıl</span>
+            </button>
+          </div>
         </div>
-        <section className="main-surface">
-          {view === "lobby" && (
-            <LobbyPage
-              lobby={snapshot.lobby}
-              playerId={session.playerId}
-              isAdmin={isAdmin}
-              tournament={snapshot.tournament}
-              onCopyCode={() => void copyValue(snapshot.lobby.code, "Lobi kodu kopyalandı")}
-              onCopyJoinUrl={() => void copyValue(`${window.location.origin}/?code=${snapshot.lobby.code}`, "Katılım linki kopyalandı")}
-              onReady={() => socket.emit("lobby:ready")}
-              onKick={(playerId) => socket.emit("admin:kickPlayer", { playerId })}
-            />
-          )}
-          {view === "admin" && isAdmin && (
-            <AdminPage
-              snapshot={snapshot}
-              overlayUrl={overlayHref}
-              chromaUrl={chromaHref}
-              onAdvancePhase={() => socket.emit("admin:advancePhase")}
-              onAssignWinner={(matchId, winnerId) => socket.emit("admin:assignWinner", { matchId, winnerId })}
-              onAddTestPlayer={() => socket.emit("admin:addTestPlayer")}
-              onRestartMatch={(matchId) => socket.emit("admin:restartMatch", { matchId })}
-              onSeed={() => socket.emit("admin:tournamentSeed")}
-              onShowChampion={() => socket.emit("admin:showChampion")}
-              onStartTestTournament={() => {
-                socket.emit("admin:startTestTournament");
-                setView("bracket");
-              }}
-              onStartPhase={() => socket.emit("admin:phaseStart")}
-              onStartTournament={() => socket.emit("admin:tournamentStart")}
-              onPausePhase={() => {
-                if (currentPhase) socket.emit("admin:phasePause", { phaseId: currentPhase.id });
-              }}
-              onResumePhase={() => {
-                if (currentPhase) socket.emit("admin:phaseResume", { phaseId: currentPhase.id });
-              }}
-              onClearFeed={() => socket.emit("admin:clearFeed")}
-              onUpdateRoom={(patch) => socket.emit("admin:updateRoom", patch)}
-              onCopyOverlay={() => void copyValue(overlayHref, "Overlay URL kopyalandı")}
-            />
-          )}
-          {view === "match" && (
-            <MatchPage
-              match={myMatch}
-              playerId={session.playerId}
-              selectedMove={selectedMove}
-              moveLocked={moveLocked}
-              reveal={reveal}
-              settings={roomSettings(snapshot.lobby)}
-              onMove={(matchId, move) => {
-                setSelectedMove(move);
-                socket.emit("match:move", { matchId, move });
-              }}
-            />
-          )}
-          {view === "bracket" && (
-            <BracketPage bracket={snapshot.bracket} playerId={session.playerId} tournament={snapshot.tournament} />
-          )}
-          {view === "result" && <ResultPage snapshot={snapshot} />}
-          {view === "overlay" && (
-            <OverlayPage
-              snapshot={snapshot}
-              overlayUrl={overlayHref}
-              chromaUrl={chromaHref}
-              onCopyOverlay={() => void copyValue(overlayHref, "Overlay URL kopyalandı")}
-              onOpenOverlay={() => window.open(overlayHref, "_blank")}
-            />
-          )}
-        </section>
+        <nav className="tabs" aria-label="Görünüm">
+          <TabButton active={activeTab === "arena"} label={myMatch ? "Maçın" : "Arena"} live={Boolean(myMatch)} onClick={() => setTab("arena")} />
+          <TabButton active={activeTab === "bracket"} label="Tablo" onClick={() => setTab("bracket")} />
+          {isAdmin && <TabButton active={activeTab === "admin"} label="Yönetim" onClick={() => setTab("admin")} />}
+        </nav>
+      </header>
 
-        {view !== "overlay" && (
-          <aside className="side-rail">
-            <ActiveMatchesPanel matches={snapshot.activeMatches} />
-            <ActivityFeed events={snapshot.feed} />
-          </aside>
-        )}
+      <div className="workspace">
+        <main className="stage">
+          {activeTab === "arena" && (
+            <>
+              {isAdmin && !myMatch && <AdminNextStep onCommand={send} snapshot={snapshot} />}
+              {arena}
+            </>
+          )}
+          {activeTab === "bracket" && (
+            <LiveBracket bracket={snapshot.bracket} playerId={session.playerId} tournament={tournament} />
+          )}
+          {activeTab === "admin" && (
+            <AdminPage
+              chromaUrl={overlayUrl(lobby.code, true)}
+              onCommand={send}
+              onCopyOverlay={() => void copy(overlayUrl(lobby.code), "Yayın linki kopyalandı")}
+              overlayUrl={overlayUrl(lobby.code)}
+              playerId={session.playerId}
+              snapshot={snapshot}
+            />
+          )}
+        </main>
+        <aside className="rail">
+          <ActiveMatchesPanel limit={8} matches={snapshot.activeMatches} />
+          <ActivityFeed events={snapshot.feed} limit={25} />
+        </aside>
       </div>
-      {toast && <div className="toast">{toast}</div>}
+      <Toast message={toast} />
     </div>
   );
 }
 
-function NavButton({
-  active,
-  icon,
-  label,
-  onClick
-}: {
-  active: boolean;
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
+function TabButton({ active, label, live, onClick }: { active: boolean; label: string; live?: boolean; onClick: () => void }) {
   return (
-    <button className={active ? "nav-button active" : "nav-button"} type="button" onClick={onClick}>
-      {icon}
-      <span>{label}</span>
+    <button aria-current={active ? "page" : undefined} className="tab" onClick={onClick} type="button">
+      {label}
+      {live && <span className="tab__live" aria-label="canlı" />}
     </button>
+  );
+}
+
+function Toast({ message }: { message: string | null }) {
+  return (
+    <div aria-live="polite" className="toast-region" role="status">
+      {message && <p className="toast">{message}</p>}
+    </div>
   );
 }

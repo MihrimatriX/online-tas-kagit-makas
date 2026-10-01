@@ -1,136 +1,124 @@
-import { Bot, Check, Circle, Copy, Link2, Shield, X } from "lucide-react";
-import { Lobby, Tournament } from "../types";
-import { statusLabel, roomSettings } from "../lib/format";
+import { Check, Copy, Link2, X } from "lucide-react";
+import { Lobby } from "../types";
 
 interface LobbyPageProps {
   lobby: Lobby;
-  tournament: Tournament | null;
-  playerId: string | null;
+  playerId: string;
   isAdmin: boolean;
   onReady: () => void;
   onCopyCode: () => void;
-  onCopyJoinUrl: () => void;
-  onKick: (playerId: string) => void;
+  onCopyLink: () => void;
+  onKick: (playerId: string, name: string) => void;
 }
 
-export function LobbyPage({
-  lobby,
-  tournament,
-  playerId,
-  isAdmin,
-  onReady,
-  onCopyCode,
-  onCopyJoinUrl,
-  onKick
-}: LobbyPageProps) {
+export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCopyLink, onKick }: LobbyPageProps) {
   const me = lobby.players.find((player) => player.id === playerId);
-  const waitingPlayers = lobby.players.filter((player) => !player.isTest && !player.isReady);
+  const humans = lobby.players.filter((player) => !player.isTest);
   const readyCount = lobby.players.filter((player) => player.isReady || player.isTest).length;
-  const settings = roomSettings(lobby);
-
-  const othersWaiting = waitingPlayers.filter((player) => player.id !== playerId);
-
-  const hint = tournament
-    ? tournament.status === "finished"
-      ? "Turnuva bitti. Şampiyonu Sonuç sekmesinden görebilirsin."
-      : "Maçın gelince Maçım sekmesine geç. Tabloyu da oradan izleyebilirsin."
-    : isAdmin
-      ? othersWaiting.length
-        ? `Herkes Hazırım desin (${othersWaiting.map((player) => player.name).join(", ")} bekleniyor). Sonra Yönetim’den eşleşmeleri oluştur.`
-        : me?.isReady
-          ? "Herkes hazır. Yönetim sekmesinden eşleşmeleri oluştur, sonra turnuvayı başlat."
-          : "Sen de Hazırım de. Sonra Yönetim’den eşleşmeleri oluştur."
-      : me?.isReady
-        ? "Hazırsın. Admin’in turnuvayı başlatması bekleniyor."
-        : "Kodu arkadaşlarınla paylaş. Hazırsan aşağıdaki butona bas.";
+  const { winningScore, moveSeconds, countdownSeconds, autoAdvance } = lobby.settings;
 
   return (
-    <main className="page-stack">
-      <section className="hero-band">
-        <div>
-          <span className="eyebrow">{lobby.name}</span>
-          <h1>{lobby.code}</h1>
-          <p className="hero-rules">
-            İlk {settings.winningScore} puan · {settings.moveSeconds} sn hamle
-            {settings.countdownSeconds ? ` · ${settings.countdownSeconds} sn geri sayım` : ""}
-          </p>
-        </div>
-        <div className="hero-actions">
-          <button className="secondary-button" onClick={onCopyCode} type="button">
-            <Copy size={16} />
+    <div className="lobby">
+      <section className="lobby__code" aria-label="Lobi kodu">
+        <span className="field__label">Lobi kodu</span>
+        <p className="code-mega">{lobby.code}</p>
+        <div className="button-row">
+          <button className="btn" onClick={onCopyCode} type="button">
+            <Copy size={16} aria-hidden="true" />
             Kodu kopyala
           </button>
-          <button className="secondary-button" onClick={onCopyJoinUrl} type="button">
-            <Link2 size={16} />
-            Linki kopyala
+          <button className="btn" onClick={onCopyLink} type="button">
+            <Link2 size={16} aria-hidden="true" />
+            Davet linki
           </button>
         </div>
+        <dl className="rules">
+          <div>
+            <dt>Maç</dt>
+            <dd>İlk {winningScore} puan</dd>
+          </div>
+          <div>
+            <dt>Hamle</dt>
+            <dd>{moveSeconds} sn</dd>
+          </div>
+          <div>
+            <dt>Geri sayım</dt>
+            <dd>{countdownSeconds ? `${countdownSeconds} sn` : "Yok"}</dd>
+          </div>
+          <div>
+            <dt>Tur geçişi</dt>
+            <dd>{autoAdvance ? "Otomatik" : "Yönetici onaylar"}</dd>
+          </div>
+        </dl>
       </section>
 
-      <p className="hint-banner">{hint}</p>
-
-      <section className="panel">
-        <div className="panel-head">
-          <span>Oyuncular</span>
+      <section className="lobby__roster">
+        <header className="sheet-head">
+          <h2>Oyuncular</h2>
           <span>
             {lobby.players.length} kişi · {readyCount} hazır
           </span>
-        </div>
-        <div className="player-grid">
-          {lobby.players.map((player) => (
-            <article className={`player-card ${player.id === playerId ? "current-player" : ""} ${player.isEliminated ? "eliminated" : ""}`} key={player.id}>
-              <div>
-                <strong>
-                  {player.name}
-                  {player.id === playerId ? " (sen)" : ""}
-                </strong>
-                <span>
-                  {player.isEliminated
-                    ? "elendi"
-                    : player.isTest
-                      ? "bot"
-                      : player.connectionStatus === "online"
-                        ? "bağlı"
-                        : "koptu"}
-                </span>
-              </div>
-              <div className="player-tags">
-                {player.isAdmin && (
-                  <span className="tag">
-                    <Shield size={12} />
-                    Admin
-                  </span>
+        </header>
+        <ol className="roster">
+          {lobby.players.map((player, index) => (
+            <li className={`roster__row${player.id === playerId ? " is-me" : ""}`} key={player.id}>
+              <span className="roster__no">{String(index + 1).padStart(2, "0")}</span>
+              <span className="roster__name">
+                <span
+                  className={`presence${player.isTest || player.connectionStatus === "online" ? "" : " is-off"}`}
+                  title={player.isTest ? "Bot" : player.connectionStatus === "online" ? "Bağlı" : "Bağlantı koptu"}
+                />
+                {player.name}
+                {player.id === playerId && <small>sen</small>}
+                {player.isAdmin && <small>yönetici</small>}
+                {player.isTest && <small>bot</small>}
+              </span>
+              <span className={`roster__state${player.isReady ? " is-ready" : ""}`}>
+                {player.isReady ? (
+                  <>
+                    <Check size={14} aria-hidden="true" /> Hazır
+                  </>
+                ) : (
+                  "Bekleniyor"
                 )}
-                {player.isTest && (
-                  <span className="tag">
-                    <Bot size={12} />
-                    Bot
-                  </span>
-                )}
-                <span className={player.isReady ? "tag ready" : "tag muted"}>
-                  {player.isReady ? <Check size={12} /> : <Circle size={12} />}
-                  {player.isReady ? "Hazır" : "Hazır değil"}
-                </span>
-                {isAdmin && player.id !== playerId && !player.isEliminated && (
-                  <button className="kick-button" type="button" onClick={() => onKick(player.id)} title="Oyuncuyu çıkar">
-                    <X size={12} />
-                  </button>
-                )}
-              </div>
-            </article>
+              </span>
+              {isAdmin && player.id !== playerId ? (
+                <button
+                  aria-label={`${player.name} oyuncusunu çıkar`}
+                  className="icon-btn"
+                  onClick={() => onKick(player.id, player.name)}
+                  title="Lobiden çıkar"
+                  type="button"
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              ) : (
+                <span aria-hidden="true" />
+              )}
+            </li>
           ))}
-        </div>
+        </ol>
+        {humans.length === 1 && (
+          <p className="empty-note">
+            Şimdilik tek başınasın. Kodu paylaş{isAdmin ? " ya da Yönetim’den bot ekleyip dene" : ""}.
+          </p>
+        )}
       </section>
 
-      <section className="panel action-row">
-        <div>
-          <strong>{tournament ? statusLabel(tournament.status) : "Turnuva henüz başlamadı"}</strong>
-          <span>{tournament ? "Maçlar ve tablo üst menüde." : "Hazır olunca admin başlatır."}</span>
-        </div>
-        <button className="primary-button" disabled={Boolean(tournament)} onClick={onReady} type="button">
-          {me?.isReady ? "Hazır değilim" : "Hazırım"}
-        </button>
-      </section>
-    </main>
+      {me && (
+        <section className="lobby__ready">
+          <p>
+            {me.isReady
+              ? isAdmin
+                ? "Hazırsın. Herkes hazır olunca kurayı çekebilirsin."
+                : "Hazırsın. Yöneticinin kurayı çekmesi bekleniyor."
+              : "Hazır olduğunda bas. Herkes hazır olunca kura çekilir."}
+          </p>
+          <button aria-pressed={me.isReady} className={`btn btn--lg ${me.isReady ? "" : "btn--ink"}`} onClick={onReady} type="button">
+            {me.isReady ? "Hazır değilim" : "Hazırım"}
+          </button>
+        </section>
+      )}
+    </div>
   );
 }

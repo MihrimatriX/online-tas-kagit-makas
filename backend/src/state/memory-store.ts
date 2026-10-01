@@ -10,10 +10,20 @@ import {
   defaultRoomSettings,
   normalizeRoomSettings
 } from "../tournament/tournament.types.js";
-import { buildBracketSnapshot, createId, nowIso, safeMatch } from "../tournament/bracket.service.js";
+import { buildBracketSnapshot, createId, nowIso } from "../tournament/bracket.service.js";
 
 const RANDOM_LOBBY_CAPACITY = 8;
 const MAX_LOBBY_PLAYERS = 64;
+const DEFAULT_LOBBY_NAME = "Taş Kağıt Makas";
+
+export interface RoomPatch {
+  name?: string;
+  overlayEnabled?: boolean;
+  winningScore?: number;
+  moveSeconds?: number;
+  countdownSeconds?: number;
+  autoAdvance?: boolean;
+}
 
 export class MemoryStore {
   readonly lobbies = new Map<string, Lobby>();
@@ -24,49 +34,43 @@ export class MemoryStore {
   readonly adminActionsByTournament = new Map<string, AdminAction[]>();
   readonly sessions = new Map<string, ClientSession>();
 
-  createSession(socketId: string) {
-    const session: ClientSession = {
-      socketId,
-      playerId: null,
-      lobbyId: null
-    };
-    this.sessions.set(socketId, session);
+  getSession(socketId: string) {
+    let session = this.sessions.get(socketId);
+    if (!session) {
+      session = { socketId, playerId: null, lobbyId: null };
+      this.sessions.set(socketId, session);
+    }
     return session;
   }
 
-  getSession(socketId: string) {
-    return this.sessions.get(socketId) ?? this.createSession(socketId);
-  }
-
+  /** Drops the socket's session; the player goes offline only if this socket still owns them. */
   removeSession(socketId: string) {
     const session = this.sessions.get(socketId);
-    if (session?.lobbyId && session.playerId) {
-      const lobby = this.lobbies.get(session.lobbyId);
-      const player = lobby?.players.find((candidate) => candidate.id === session.playerId);
-      if (player) {
-        player.socketId = null;
-        player.connectionStatus = "offline";
-      }
-    }
-
     this.sessions.delete(socketId);
-    return session;
+    const player = session ? this.findPlayer(session.lobbyId, session.playerId) : undefined;
+    const ownedPlayer = player?.socketId === socketId ? player : undefined;
+    if (ownedPlayer) {
+      ownedPlayer.socketId = null;
+      ownedPlayer.connectionStatus = "offline";
+    }
+    return { session, player: ownedPlayer };
   }
 
   createLobby(socketId: string, playerName: string) {
-    const createdAt = nowIso();
     const player = createPlayer(socketId, playerName, true);
+    const createdAt = nowIso();
     const lobby: Lobby = {
       id: createId("lobby"),
       code: createLobbyCode(this.lobbiesByCode),
-      name: "Taş Kağıt Makas",
+      name: DEFAULT_LOBBY_NAME,
       status: "waiting",
       adminPlayerId: player.id,
       players: [player],
       tournamentId: null,
       overlayEnabled: true,
       settings: defaultRoomSettings(),
-      createdAt
+      createdAt,
+      lastActiveAt: createdAt
     };
 
     this.lobbies.set(lobby.id, lobby);
@@ -77,68 +81,51 @@ export class MemoryStore {
   }
 
   joinRandomLobby(socketId: string, playerName: string) {
-    const waitingLobbies = Array.from(this.lobbies.values()).filter(
+    const candidates = Array.from(this.lobbies.values()).filter(
       (lobby) =>
         lobby.status === "waiting" &&
         !lobby.isTest &&
         !lobby.tournamentId &&
+        lobby.players.length < RANDOM_LOBBY_CAPACITY &&
         lobby.players.some((player) => player.connectionStatus === "online") &&
-        lobby.players.length < RANDOM_LOBBY_CAPACITY
+        !hasName(lobby, playerName)
     );
-
-    if (waitingLobbies.length === 0) {
-      return {
-        ...this.createLobby(socketId, playerName),
-        createdLobby: true
-      };
-    }
-
-    const lobby = waitingLobbies[Math.floor(Math.random() * waitingLobbies.length)];
-    const player = createPlayer(socketId, playerName, false);
-    assertUniquePlayerName(lobby, player.name);
-    lobby.players.push(player);
-    this.attachSession(socketId, lobby.id, player.id);
-
-    return {
-      lobby,
-      player,
-      createdLobby: false
-    };
-  }
-
-  addTestPlayer(lobbyId: string) {
-    const lobby = this.lobbies.get(lobbyId);
-    if (!lobby) throw new Error("Lobby not found");
-    if (lobby.status !== "waiting") throw new Error("Test players can only be added before the tournament starts");
-    if (lobby.tournamentId) throw new Error("Tournament is already seeded");
-    if (lobby.players.length >= MAX_LOBBY_PLAYERS) throw new Error("Lobby already has 64 players");
-
-    const testCount = lobby.players.filter((player) => player.isTest).length + 1;
-    const player = createPlayer(null, `Test Oyuncu ${String(testCount).padStart(2, "0")}`, false, true);
-
-    lobby.isTest = true;
-    lobby.players.push(player);
-    return { lobby, player };
+    if (candidates.length === 0) return this.createLobby(socketId, playerName);
+    const lobby = candidates[Math.floor(Math.random() * candidates.length)];
+    return this.addPlayer(socketId, lobby, playerName);
   }
 
   joinLobby(socketId: string, code: string, playerName: string) {
     const lobby = this.findLobbyByCode(code);
-    if (!lobby) throw new Error("Lobby not found");
-    if (lobby.status !== "waiting") throw new Error("Lobby is not accepting new players");
-    if (lobby.players.length >= MAX_LOBBY_PLAYERS) throw new Error("Lobby already has 64 players");
+    if (!lobby) throw new Error("Bu kodla bir lobi yok");
+    if (lobby.tournamentId || lobby.status !== "waiting") throw new Error("Bu lobide turnuva başladı, yeni oyuncu alınmıyor");
+    return this.addPlayer(socketId, lobby, playerName);
+  }
 
-    const player = createPlayer(socketId, playerName, false);
-    assertUniquePlayerName(lobby, player.name);
-    lobby.players.push(player);
-    this.attachSession(socketId, lobby.id, player.id);
-    return { lobby, player };
+  addTestPlayers(lobbyId: string, count: number) {
+    const lobby = this.requireLobby(lobbyId);
+    if (lobby.tournamentId) throw new Error("Eşleşmeler çekildikten sonra bot eklenemez");
+    const room = MAX_LOBBY_PLAYERS - lobby.players.length;
+    if (room <= 0) throw new Error(`Lobi dolu (${MAX_LOBBY_PLAYERS} oyuncu)`);
+
+    const added: Player[] = [];
+    let serial = lobby.players.filter((player) => player.isTest).length;
+    while (added.length < Math.min(count, room)) {
+      serial += 1;
+      const name = `Bot ${String(serial).padStart(2, "0")}`;
+      if (hasName(lobby, name)) continue;
+      const bot = createPlayer(null, name, false, true);
+      lobby.players.push(bot);
+      added.push(bot);
+    }
+    lobby.isTest = true;
+    return added;
   }
 
   validateReconnect(lobbyCode: string, playerId: string, reconnectToken: string) {
     const lobby = this.findLobbyByCode(lobbyCode);
-    if (!lobby) return null;
-    const player = lobby.players.find((candidate) => candidate.id === playerId);
-    if (!player?.reconnectToken || player.reconnectToken !== reconnectToken) return null;
+    const player = lobby?.players.find((candidate) => candidate.id === playerId);
+    if (!lobby || !player?.reconnectToken || player.reconnectToken !== reconnectToken) return null;
     return { lobby, player };
   }
 
@@ -146,9 +133,8 @@ export class MemoryStore {
     const session = this.getSession(socketId);
     session.lobbyId = lobbyId;
     session.playerId = playerId;
-
-    const lobby = this.lobbies.get(lobbyId);
-    const player = lobby?.players.find((candidate) => candidate.id === playerId);
+    session.isSpectator = false;
+    const player = this.findPlayer(lobbyId, playerId);
     if (player) {
       player.socketId = socketId;
       player.connectionStatus = "online";
@@ -162,104 +148,89 @@ export class MemoryStore {
     session.isSpectator = true;
   }
 
-  kickPlayer(lobbyId: string, targetId: string, adminId: string) {
-    const lobby = this.lobbies.get(lobbyId);
-    if (!lobby) throw new Error("Lobi bulunamadı");
-    if (targetId === adminId || targetId === lobby.adminPlayerId) {
-      throw new Error("Admin atılamaz");
-    }
-
-    const player = lobby.players.find((candidate) => candidate.id === targetId);
+  /** Before pairings the player disappears; afterwards they stay on the sheet, eliminated. */
+  removePlayer(lobbyId: string, playerId: string) {
+    const lobby = this.requireLobby(lobbyId);
+    const player = lobby.players.find((candidate) => candidate.id === playerId);
     if (!player) throw new Error("Oyuncu bulunamadı");
-    if (player.isTest && lobby.tournamentId) {
-      throw new Error("Turnuva başladıktan sonra test oyuncusu atılamaz");
-    }
-
     const socketId = player.socketId;
+    // A kicked or departed player must not be able to reconnect with their old token.
+    delete player.reconnectToken;
+
     if (lobby.tournamentId) {
       player.socketId = null;
       player.connectionStatus = "offline";
       player.isEliminated = true;
       player.isReady = false;
     } else {
-      lobby.players = lobby.players.filter((candidate) => candidate.id !== targetId);
+      lobby.players = lobby.players.filter((candidate) => candidate.id !== playerId);
     }
-
-    return { lobby, player, socketId };
+    return { player, socketId };
   }
 
+  /** Hands admin to the first online human if the current admin is gone. */
   promoteAdmin(lobbyId: string) {
     const lobby = this.lobbies.get(lobbyId);
     if (!lobby) return null;
+    const current = lobby.players.find((player) => player.id === lobby.adminPlayerId);
+    if (current?.connectionStatus === "online") return null;
 
-    const currentAdmin = lobby.players.find((player) => player.id === lobby.adminPlayerId);
-    if (currentAdmin?.connectionStatus === "online" && currentAdmin.socketId) return null;
-
-    const next = lobby.players.find(
-      (player) => player.connectionStatus === "online" && !player.isTest && Boolean(player.socketId)
-    );
-    if (!next) return null;
-
-    lobby.adminPlayerId = next.id;
-    lobby.players.forEach((player) => {
-      player.isAdmin = player.id === next.id;
-    });
-
-    if (lobby.tournamentId) {
-      const tournament = this.tournaments.get(lobby.tournamentId);
-      if (tournament) tournament.adminPlayerId = next.id;
-    }
-
+    const next = lobby.players.find((player) => player.connectionStatus === "online" && !player.isTest);
+    if (!next || next.id === current?.id) return null;
+    this.setAdmin(lobby, next.id);
     return next;
   }
 
-  compactWaitingLobbyById(lobbyId: string) {
+  /** Waiting lobbies drop offline humans; a lobby with no humans left is deleted. */
+  compactWaitingLobby(lobbyId: string) {
     const lobby = this.lobbies.get(lobbyId);
-    if (lobby) this.compactWaitingLobby(lobby);
+    if (!lobby || lobby.status !== "waiting" || lobby.tournamentId) return;
+
+    const humansOnline = lobby.players.filter((player) => !player.isTest && player.connectionStatus === "online");
+    if (humansOnline.length === 0) {
+      this.deleteLobby(lobbyId);
+      return;
+    }
+    lobby.players = lobby.players.filter((player) => player.isTest || player.connectionStatus === "online");
+    if (!humansOnline.some((player) => player.id === lobby.adminPlayerId)) this.setAdmin(lobby, humansOnline[0].id);
+  }
+
+  deleteTournament(tournamentId: string) {
+    const tournament = this.tournaments.get(tournamentId);
+    if (!tournament) return;
+    for (const phase of tournament.phases) phase.matchIds.forEach((matchId) => this.matches.delete(matchId));
+    this.tournaments.delete(tournamentId);
+    this.adminActionsByTournament.delete(tournamentId);
+    const lobby = this.lobbies.get(tournament.lobbyId);
+    if (lobby?.tournamentId === tournamentId) lobby.tournamentId = null;
+  }
+
+  deleteLobby(lobbyId: string) {
+    const lobby = this.lobbies.get(lobbyId);
+    if (!lobby) return;
+    if (lobby.tournamentId) this.deleteTournament(lobby.tournamentId);
+    this.lobbies.delete(lobbyId);
+    this.lobbiesByCode.delete(lobby.code);
+    this.feedByLobby.delete(lobbyId);
   }
 
   clearFeed(lobbyId: string) {
     this.feedByLobby.set(lobbyId, []);
   }
 
-  updateRoom(lobbyId: string, patch: {
-    name?: string;
-    overlayEnabled?: boolean;
-    winningScore?: number;
-    moveSeconds?: number;
-    countdownSeconds?: number;
-    autoAdvance?: boolean;
-  }) {
-    const lobby = this.lobbies.get(lobbyId);
-    if (!lobby) throw new Error("Lobi bulunamadı");
-
+  updateRoom(lobbyId: string, patch: RoomPatch) {
+    const lobby = this.requireLobby(lobbyId);
     const changingRules =
-      patch.winningScore !== undefined ||
-      patch.moveSeconds !== undefined ||
-      patch.countdownSeconds !== undefined;
-    if (changingRules && lobby.tournamentId) {
-      throw new Error("Turnuva başladıktan sonra maç kuralları kilitlenir");
-    }
+      patch.winningScore !== undefined || patch.moveSeconds !== undefined || patch.countdownSeconds !== undefined;
+    if (changingRules && lobby.tournamentId) throw new Error("Eşleşmeler çekildikten sonra maç kuralları kilitlenir");
 
     if (patch.name !== undefined) {
       const name = patch.name.trim().slice(0, 32);
-      if (!name) throw new Error("Oda adı gerekli");
+      if (!name) throw new Error("Oda adı boş olamaz");
       lobby.name = name;
     }
-
-    if (patch.overlayEnabled !== undefined) {
-      lobby.overlayEnabled = patch.overlayEnabled;
-    }
-
-    lobby.settings = normalizeRoomSettings(patch, lobby.settings ?? defaultRoomSettings());
-
-    if (patch.autoAdvance !== undefined && lobby.tournamentId) {
-      const tournament = this.tournaments.get(lobby.tournamentId);
-      if (tournament) {
-        tournament.roundAdvanceMode = patch.autoAdvance ? "automatic" : "hybrid";
-      }
-    }
-
+    if (patch.overlayEnabled !== undefined) lobby.overlayEnabled = patch.overlayEnabled;
+    lobby.settings = normalizeRoomSettings(patch, lobby.settings);
     return lobby;
   }
 
@@ -283,76 +254,65 @@ export class MemoryStore {
   }
 
   buildSnapshot(lobbyId: string): TournamentSnapshot {
-    const lobby = this.lobbies.get(lobbyId);
-    if (!lobby) throw new Error("Lobby not found");
-
+    const lobby = this.requireLobby(lobbyId);
     const tournament = lobby.tournamentId ? this.tournaments.get(lobby.tournamentId) ?? null : null;
     const bracket = tournament ? buildBracketSnapshot(tournament.phases, this.matches) : [];
-    const activeMatches = tournament
-      ? Array.from(this.matches.values())
-          .filter(
-            (match) =>
-              match.tournamentId === tournament.id &&
-              (match.status === "playing" || match.status === "paused")
-          )
-          .map(safeMatch)
-      : [];
-    const feed = this.feedByLobby.get(lobbyId) ?? [];
-    const adminActions = tournament ? this.adminActionsByTournament.get(tournament.id) ?? [] : [];
 
     return {
       lobby: {
         ...lobby,
-        players: lobby.players.map(({ reconnectToken: _token, ...player }) => player)
+        players: lobby.players.map(({ reconnectToken: _token, socketId: _socket, ...player }) => player)
       },
       tournament,
       bracket,
-      activeMatches,
-      feed,
-      adminActions
+      activeMatches: bracket
+        .flatMap((phase) => phase.matches)
+        .filter((match) => match.status === "playing" || match.status === "paused"),
+      feed: this.feedByLobby.get(lobbyId) ?? [],
+      adminActions: tournament ? this.adminActionsByTournament.get(tournament.id) ?? [] : [],
+      serverTime: nowIso()
     };
   }
 
-  private compactWaitingLobby(lobby: Lobby) {
-    if (lobby.status !== "waiting" || lobby.tournamentId) return;
+  private addPlayer(socketId: string, lobby: Lobby, playerName: string) {
+    if (lobby.players.length >= MAX_LOBBY_PLAYERS) throw new Error(`Lobi dolu (${MAX_LOBBY_PLAYERS} oyuncu)`);
+    const player = createPlayer(socketId, playerName, false);
+    if (hasName(lobby, player.name)) throw new Error("Bu isim lobide kullanılıyor, başka bir isim seç");
+    lobby.players.push(player);
+    this.attachSession(socketId, lobby.id, player.id);
+    return { lobby, player };
+  }
 
-    const realOnlinePlayers = lobby.players.filter(
-      (player) => player.connectionStatus === "online" && !player.isTest && Boolean(player.socketId)
-    );
-
-    if (realOnlinePlayers.length === 0) {
-      this.lobbies.delete(lobby.id);
-      this.lobbiesByCode.delete(lobby.code);
-      this.feedByLobby.delete(lobby.id);
-      return;
-    }
-
-    lobby.players = lobby.players.filter(
-      (player) => player.isTest || realOnlinePlayers.some((onlinePlayer) => onlinePlayer.id === player.id)
-    );
-
-    const currentAdmin = realOnlinePlayers.find((player) => player.id === lobby.adminPlayerId);
-    if (!currentAdmin) {
-      lobby.adminPlayerId = realOnlinePlayers[0].id;
-    }
-
+  private setAdmin(lobby: Lobby, playerId: string) {
+    lobby.adminPlayerId = playerId;
     lobby.players.forEach((player) => {
-      player.isAdmin = player.id === lobby.adminPlayerId;
+      player.isAdmin = player.id === playerId;
     });
+    const tournament = lobby.tournamentId ? this.tournaments.get(lobby.tournamentId) : undefined;
+    if (tournament) tournament.adminPlayerId = playerId;
+  }
+
+  private requireLobby(lobbyId: string) {
+    const lobby = this.lobbies.get(lobbyId);
+    if (!lobby) throw new Error("Lobi bulunamadı");
+    return lobby;
+  }
+
+  private findPlayer(lobbyId: string | null, playerId: string | null) {
+    if (!lobbyId || !playerId) return undefined;
+    return this.lobbies.get(lobbyId)?.players.find((candidate) => candidate.id === playerId);
   }
 }
 
 function normalizeName(value: string) {
-  const name = value.trim().slice(0, 18);
+  const name = value.trim().replace(/\s+/g, " ").slice(0, 18);
   if (!name) throw new Error("Oyuncu adı gerekli");
   return name;
 }
 
-function assertUniquePlayerName(lobby: Lobby, name: string) {
-  const key = name.toLocaleLowerCase("tr-TR");
-  if (lobby.players.some((player) => player.name.toLocaleLowerCase("tr-TR") === key)) {
-    throw new Error("Bu isim lobide kullanılıyor");
-  }
+function hasName(lobby: Lobby, name: string) {
+  const key = name.trim().toLocaleLowerCase("tr-TR");
+  return lobby.players.some((player) => player.name.toLocaleLowerCase("tr-TR") === key);
 }
 
 function createPlayer(socketId: string | null, playerName: string, isAdmin: boolean, isTest = false): Player {
@@ -373,10 +333,8 @@ function createPlayer(socketId: string | null, playerName: string, isAdmin: bool
 function createLobbyCode(existingCodes: Map<string, string>) {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
-
   do {
     code = Array.from({ length: 5 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
   } while (existingCodes.has(code));
-
   return code;
 }
