@@ -4,8 +4,8 @@
   "description": "Gerçek zamanlı, eleme usulü taş kağıt makas turnuvası. Lobi kur, koda katıl, şampiyon ol.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f4efe6",
-  "theme_color": "#f4efe6",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "lang": "tr",
   "icons": [
     {

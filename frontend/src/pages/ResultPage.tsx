@@ -5,11 +5,10 @@ interface ResultPageProps {
   snapshot: TournamentSnapshot;
   playerId: string;
   isAdmin: boolean;
-  onNewTournament: () => void;
   onOpenBracket: () => void;
 }
 
-export function ResultPage({ snapshot, playerId, isAdmin, onNewTournament, onOpenBracket }: ResultPageProps) {
+export function ResultPage({ snapshot, playerId, isAdmin, onOpenBracket }: ResultPageProps) {
   const champion = snapshot.tournament?.champion;
   const matches = snapshot.bracket.flatMap((phase) => phase.matches);
   const played = matches.filter((match) => !match.isBye && match.status !== "waiting");
@@ -24,7 +23,7 @@ export function ResultPage({ snapshot, playerId, isAdmin, onNewTournament, onOpe
   const rounds = played.reduce((sum, match) => sum + match.rounds.length, 0);
 
   return (
-    <div className="result">
+    <div className="result card">
       <section className="result__crown">
         <Trophy className="result__trophy" size={44} aria-hidden="true" />
         <span className="field__label">Şampiyon</span>
@@ -70,16 +69,9 @@ export function ResultPage({ snapshot, playerId, isAdmin, onNewTournament, onOpe
         )}
       </dl>
 
-      <div className="button-row">
-        {isAdmin && (
-          <button className="btn btn--ink btn--lg" onClick={onNewTournament} type="button">
-            Aynı lobiyle yeni turnuva
-          </button>
-        )}
-        <button className="btn btn--lg" onClick={onOpenBracket} type="button">
-          Tabloyu gör
-        </button>
-      </div>
+      <button className="btn" onClick={onOpenBracket} type="button">
+        Tabloyu gör
+      </button>
       {!isAdmin && <p className="empty-note">Yönetici yeni turnuva açarsa bu lobide kalırsın.</p>}
     </div>
   );

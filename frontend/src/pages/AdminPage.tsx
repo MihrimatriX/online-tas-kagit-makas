@@ -111,7 +111,7 @@ export function AdminNextStep({ snapshot, onCommand }: { snapshot: TournamentSna
       <div className="command__actions">
         {step.primary && (
           <button
-            className="btn btn--accent btn--lg"
+            className="btn btn--primary btn--lg"
             disabled={step.primary.disabled}
             onClick={() => onCommand(step.primary!.command)}
             type="button"
@@ -289,9 +289,9 @@ export function AdminPage({ snapshot, playerId, overlayUrl, chromaUrl, onCommand
 
           <section>
             <header className="sheet-head">
-              <h2>Kayıt</h2>
+              <h2>İşlem geçmişi</h2>
               <button className="btn btn--sm btn--quiet" onClick={() => onCommand("admin:clearFeed")} type="button">
-                Akışı temizle
+                Canlı akışı temizle
               </button>
             </header>
             {adminActions.length === 0 ? (

@@ -28,7 +28,7 @@ export function LiveBracket({ bracket, tournament, playerId }: LiveBracketProps)
             <section className={`draw-col${round.isCurrent ? " is-current" : ""}`} key={round.key}>
               <header className="draw-col__head">
                 <h3>{round.name}</h3>
-                <span>{statusLabel(round.status)}</span>
+                {round.key !== "champion" && <span>{statusLabel(round.status)}</span>}
               </header>
               <div className="draw-col__body">
                 {pairs(round.nodes).map((pair) => (

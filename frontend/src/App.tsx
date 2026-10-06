@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, Volume2, VolumeX } from "lucide-react";
+import type { Socket } from "socket.io-client";
 import { LiveBracket } from "./components/bracket/LiveBracket";
 import { ActiveMatchesPanel } from "./components/live/ActiveMatchesPanel";
 import { ActivityFeed } from "./components/live/ActivityFeed";
@@ -31,6 +32,8 @@ function PlayerApp({ initialCode }: { initialCode: string }) {
   const [tab, setTab] = useState<Tab>("arena");
   const [toast, setToast] = useState<string | null>(null);
   const [connected, setConnected] = useState(socket.connected);
+  // Another tab took this session over; socket.io won't reconnect on its own after a server-side disconnect.
+  const [takenOver, setTakenOver] = useState(false);
   const [muted, setMutedState] = useState(isMuted);
   const [restoring, setRestoring] = useState(() => Boolean(loadSession()));
   const toastTimer = useRef<number | undefined>(undefined);
@@ -59,9 +62,13 @@ function PlayerApp({ initialCode }: { initialCode: string }) {
     const handlers: Record<string, (...args: any[]) => void> = {
       connect: () => {
         setConnected(true);
+        setTakenOver(false);
         reconnect();
       },
-      disconnect: () => setConnected(false),
+      disconnect: (reason: Socket.DisconnectReason) => {
+        setConnected(false);
+        // TODO(human): decide when this disconnect means "another tab took the session" → setTakenOver(...)
+      },
       "session:ready": (payload: SessionState) => {
         saveSession(payload);
         setRestoring(false);
@@ -183,7 +190,6 @@ function PlayerApp({ initialCode }: { initialCode: string }) {
     arena = (
       <ResultPage
         isAdmin={isAdmin}
-        onNewTournament={() => send("admin:newTournament")}
         onOpenBracket={() => setTab("bracket")}
         playerId={session.playerId}
         snapshot={snapshot}
@@ -221,7 +227,14 @@ function PlayerApp({ initialCode }: { initialCode: string }) {
           </div>
           <span className="masthead__phase">
             <span className={`presence${connected ? "" : " is-off"}`} />
-            {!connected
+            {takenOver ? (
+              <>
+                Başka bir sekmede açık
+                <button className="btn btn--sm btn--quiet" onClick={() => socket.connect()} type="button">
+                  Burada devam et
+                </button>
+              </>
+            ) : !connected
               ? "Bağlantı koptu, yeniden bağlanılıyor…"
               : tournament?.status === "finished"
                 ? "Turnuva bitti"
@@ -281,7 +294,7 @@ function PlayerApp({ initialCode }: { initialCode: string }) {
           )}
         </main>
         <aside className="rail">
-          <ActiveMatchesPanel limit={8} matches={snapshot.activeMatches} />
+          {snapshot.activeMatches.length > 0 && <ActiveMatchesPanel limit={8} matches={snapshot.activeMatches} />}
           <ActivityFeed events={snapshot.feed} limit={25} />
         </aside>
       </div>

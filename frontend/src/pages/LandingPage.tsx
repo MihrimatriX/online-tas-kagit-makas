@@ -1,5 +1,4 @@
 import { FormEvent, useState } from "react";
-import { MoveIcon } from "../components/MoveIcon";
 
 interface LandingPageProps {
   initialCode?: string;
@@ -43,44 +42,14 @@ export function LandingPage({ initialCode = "", connected, restoring, onCreateLo
   }
 
   return (
-    <div className="landing">
-      <header className="landing__mast">
-        <Wordmark />
-        <span className="landing__tagline">Canlı eleme turnuvası</span>
-      </header>
+    <main className="landing">
+      <div className="landing__card card">
+        <div className="landing__head">
+          <h1 className="wordmark">RPS Arena</h1>
+          <p>Arkadaşlarınla eleme usulü taş-kağıt-makas turnuvası. 2–64 oyuncu.</p>
+        </div>
 
-      <main className="landing__body">
-        <section className="landing__pitch">
-          <h1 className="landing__title">
-            Taş, kağıt, makas.
-            <span>Son kalan kazanır.</span>
-          </h1>
-          <div className="landing__glyphs" aria-hidden="true">
-            <MoveIcon move="rock" size={56} />
-            <MoveIcon move="paper" size={56} />
-            <MoveIcon move="scissors" size={56} />
-          </div>
-          <ol className="steps">
-            <li>
-              <p>
-                <strong>Lobi kur</strong> ve kodu arkadaşlarına gönder. 2 ile 64 kişi arası.
-              </p>
-            </li>
-            <li>
-              <p>
-                <strong>Herkes hazır</strong> deyince kura çekilir; sayı tutmazsa birkaç kişi BYE ile tur atlar.
-              </p>
-            </li>
-            <li>
-              <p>
-                <strong>Maçı alan</strong> tur atlar (varsayılan: ilk 3 puan). Final sonunda tek kişi kalır.
-              </p>
-            </li>
-          </ol>
-        </section>
-
-        <form className="slip" onSubmit={handleSubmit}>
-          <h2 className="slip__title">Katılım fişi</h2>
+        <form className="landing__form" onSubmit={handleSubmit}>
           <label className="field">
             <span className="field__label">Adın</span>
             <input
@@ -94,7 +63,9 @@ export function LandingPage({ initialCode = "", connected, restoring, onCreateLo
             />
           </label>
           <label className="field">
-            <span className="field__label">Lobi kodu</span>
+            <span className="field__label">
+              Lobi kodu <span className="field__optional">(isteğe bağlı)</span>
+            </span>
             <input
               autoCapitalize="characters"
               autoComplete="off"
@@ -102,43 +73,31 @@ export function LandingPage({ initialCode = "", connected, restoring, onCreateLo
               className="input input--code"
               maxLength={8}
               onChange={(event) => setCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-              placeholder="Varsa yaz, yoksa boş bırak"
+              placeholder="Boş bırakırsan yeni lobi kurulur"
               spellCheck={false}
               value={code}
             />
           </label>
 
-          <div className="slip__actions">
-            {code.trim() ? (
-              <button className="btn btn--ink btn--lg" disabled={!ready} type="submit">
-                {code.trim()} lobisine katıl
-              </button>
-            ) : (
-              <button className="btn btn--ink btn--lg" disabled={!ready} type="submit">
-                Yeni lobi kur
-              </button>
-            )}
-            <button className="btn btn--quiet" disabled={!ready} onClick={() => withName(onJoinRandomLobby)} type="button">
-              Açık bir lobiye rastgele gir
-            </button>
-          </div>
-          <p className="slip__note">
+          <button className="btn btn--primary btn--lg btn--block" disabled={!ready} type="submit">
+            {code.trim() ? `${code.trim()} lobisine katıl` : "Yeni lobi kur"}
+          </button>
+          <button className="btn btn--block" disabled={!ready} onClick={() => withName(onJoinRandomLobby)} type="button">
+            Açık bir lobiye katıl
+          </button>
+          <p className="hint">
             {!connected
               ? "Sunucuya bağlanılıyor…"
               : restoring
                 ? "Önceki lobine dönülüyor…"
-                : "Lobiyi kuran kişi turnuvayı yönetir: kurallar, kura ve tur geçişleri onda."}
+                : "Lobiyi kuran kişi turnuvayı yönetir."}
           </p>
         </form>
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }
 
 export function Wordmark() {
-  return (
-    <span className="wordmark">
-      RPS<span className="wordmark__slash">/</span>Arena
-    </span>
-  );
+  return <span className="wordmark">RPS Arena</span>;
 }

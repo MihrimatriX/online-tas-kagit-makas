@@ -13,13 +13,12 @@ interface LobbyPageProps {
 
 export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCopyLink, onKick }: LobbyPageProps) {
   const me = lobby.players.find((player) => player.id === playerId);
-  const humans = lobby.players.filter((player) => !player.isTest);
   const readyCount = lobby.players.filter((player) => player.isReady || player.isTest).length;
   const { winningScore, moveSeconds, countdownSeconds, autoAdvance } = lobby.settings;
 
   return (
     <div className="lobby">
-      <section className="lobby__code" aria-label="Lobi kodu">
+      <section className="lobby__code card" aria-label="Lobi kodu">
         <span className="field__label">Lobi kodu</span>
         <p className="code-mega">{lobby.code}</p>
         <div className="button-row">
@@ -52,7 +51,7 @@ export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCop
         </dl>
       </section>
 
-      <section className="lobby__roster">
+      <section className="lobby__roster card">
         <header className="sheet-head">
           <h2>Oyuncular</h2>
           <span>
@@ -69,9 +68,9 @@ export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCop
                   title={player.isTest ? "Bot" : player.connectionStatus === "online" ? "Bağlı" : "Bağlantı koptu"}
                 />
                 {player.name}
-                {player.id === playerId && <small>sen</small>}
-                {player.isAdmin && <small>yönetici</small>}
-                {player.isTest && <small>bot</small>}
+                {player.id === playerId && <small className="tag">sen</small>}
+                {player.isAdmin && <small className="tag">yönetici</small>}
+                {player.isTest && <small className="tag">bot</small>}
               </span>
               <span className={`roster__state${player.isReady ? " is-ready" : ""}`}>
                 {player.isReady ? (
@@ -98,7 +97,7 @@ export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCop
             </li>
           ))}
         </ol>
-        {humans.length === 1 && (
+        {lobby.players.length === 1 && (
           <p className="empty-note">
             Şimdilik tek başınasın. Kodu paylaş{isAdmin ? " ya da Yönetim’den bot ekleyip dene" : ""}.
           </p>
@@ -106,7 +105,7 @@ export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCop
       </section>
 
       {me && (
-        <section className="lobby__ready">
+        <section className="lobby__ready card">
           <p>
             {me.isReady
               ? isAdmin
@@ -114,7 +113,7 @@ export function LobbyPage({ lobby, playerId, isAdmin, onReady, onCopyCode, onCop
                 : "Hazırsın. Yöneticinin kurayı çekmesi bekleniyor."
               : "Hazır olduğunda bas. Herkes hazır olunca kura çekilir."}
           </p>
-          <button aria-pressed={me.isReady} className={`btn btn--lg ${me.isReady ? "" : "btn--ink"}`} onClick={onReady} type="button">
+          <button aria-pressed={me.isReady} className={`btn btn--lg${me.isReady ? "" : " btn--primary"}`} onClick={onReady} type="button">
             {me.isReady ? "Hazır değilim" : "Hazırım"}
           </button>
         </section>
