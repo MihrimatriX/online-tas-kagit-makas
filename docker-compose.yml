@@ -1,0 +1,25 @@
+services:
+  tmk:
+    build: .
+    image: rps-arena:latest
+    container_name: afu-rps-arena
+    ports:
+      - "${PORT:-4000}:4000"
+    environment:
+      PORT: 4000
+      HOST: 0.0.0.0
+      SERVE_FRONTEND: "1"
+      FRONTEND_ORIGIN: "*"
+      DATA_FILE: /data/store.json
+    volumes:
+      - tmk-data:/data
+    restart: unless-stopped
+    networks:
+      - proxy-network
+
+volumes:
+  tmk-data:
+
+networks:
+  proxy-network:
+    external: true
